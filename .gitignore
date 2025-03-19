@@ -30,4 +30,8 @@ coverage/
 
 # Temporary files
 tmp/
-temp/ 
+temp/
+
+# Content files (stored on IPFS)
+content/
+ipfs_results/ 
