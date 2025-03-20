@@ -1,0 +1,39 @@
+{
+  "models": {
+    "af1": {
+      "name": "AF1",
+      "type": "blend",
+      "ipfsHash": "Qm...", // To be filled after IPFS upload
+      "description": "Base model for AF1 generation",
+      "size": "50MB"
+    },
+    "grlkrash2": {
+      "name": "Grlkrash 2",
+      "type": "blend",
+      "ipfsHash": "Qm...", // To be filled after IPFS upload
+      "description": "Base model for Grlkrash 2 generation",
+      "size": "167MB"
+    },
+    "forestScene": {
+      "name": "Forest Scene",
+      "type": "blend",
+      "ipfsHash": "Qm...", // To be filled after IPFS upload
+      "description": "Base model for forest scene generation",
+      "size": "37MB"
+    },
+    "psilocybinDance": {
+      "name": "Psilocybin Dance",
+      "type": "blend",
+      "ipfsHash": "Qm...", // To be filled after IPFS upload
+      "description": "Base model for psilocybin dance generation",
+      "size": "32MB"
+    },
+    "toybox": {
+      "name": "Toybox",
+      "type": "blend",
+      "ipfsHash": "Qm...", // To be filled after IPFS upload
+      "description": "Base model for toybox generation",
+      "size": "19MB"
+    }
+  }
+} 
