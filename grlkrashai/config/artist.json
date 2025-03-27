@@ -1,0 +1,51 @@
+{
+    "artist": {
+        "name": "GRLKRASH",
+        "description": "R&B/rap/hyperpop artist pushing boundaries in music and world-buidling",
+        "genres": ["r&b", "rap", "hyperpop"],
+        "platforms": {
+            "youtube": {
+                "channel": "GRLKRASH",
+                "defaultPlaylist": "Latest Releases"
+            },
+            "spotify": {
+                "artist_id": "4hc1t3A4CTdvMyCGJdt5B8",
+                "defaultPlaylist": "This is GRLKRASH"
+            },
+            "instagram": {
+                "handle": "grlkrash"
+            },
+            "twitter": {
+                "handle": "grlkrash"
+            }
+        },
+        "branding": {
+            "primaryColor": "#FF0099",
+            "secondaryColor": "#00FF99",
+            "fontFamily": "Orbitron",
+            "style": "cyberpunk"
+        },
+        "defaultHashtags": [
+            "grlkrash",
+            "hyperpop",
+            "independentartist",
+            "undergoundmusic",
+            "futuristic"
+        ],
+        "marketingPreferences": {
+            "postFrequency": "high",
+            "contentTypes": ["music", "visuals", "behind-the-scenes"],
+            "targetAudience": {
+                "demographics": ["18-34"],
+                "interests": ["rap music", "mariokart", "technology", "digital art"],
+                "regions": ["Global", "US", "EU", "JP"]
+            }
+        },
+        "automationSettings": {
+            "autoRepost": true,
+            "autoEngage": true,
+            "autoOptimize": true,
+            "crossPlatformSync": true
+        }
+    }
+} 
