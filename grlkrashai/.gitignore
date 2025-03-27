@@ -95,3 +95,8 @@ docs/test_minimal/node_modules/
 
 # Ignore all node_modules
 **/node_modules/
+
+# Ignore 3D assets (stored in IPFS)
+src/services/collaboration/assets/3d/*.blend
+src/services/collaboration/assets/3d/*.fbx
+src/services/collaboration/assets/3d/*.obj
