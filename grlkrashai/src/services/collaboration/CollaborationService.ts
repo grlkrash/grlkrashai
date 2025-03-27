@@ -5,6 +5,7 @@ import { DataProcessingService } from './DataProcessingService';
 import path from 'path';
 import fs from 'fs/promises';
 import { ResourceManager, EventController } from '../../utils/ResourceControl';
+import { IPFSService } from './IPFSService'
 
 interface RetryConfig {
     maxAttempts: number;
@@ -54,6 +55,7 @@ export class CollaborationService extends EventController {
     private runtime: IAgentRuntime;
     private generator3D: Plugin3DGeneration;
     private dataProcessor: DataProcessingService;
+    private ipfsService: IPFSService;
     private readonly ASSETS_PATH = path.join(__dirname, 'assets');
     private readonly MODEL_CACHE = new Map<string, any>();
     private readonly LYRIC_CACHE = new Map<string, string[]>();
@@ -75,6 +77,7 @@ export class CollaborationService extends EventController {
         this.runtime = runtime;
         this.generator3D = new Plugin3DGeneration();
         this.dataProcessor = new DataProcessingService();
+        this.ipfsService = new IPFSService();
         this.resourceManager = ResourceManager.getInstance();
         this.initialize();
     }
@@ -182,21 +185,17 @@ export class CollaborationService extends EventController {
     }
 
     private async loadBaseModels() {
-        const modelPath = path.join(this.ASSETS_PATH, '3d');
-        const files = await fs.readdir(modelPath);
-        
-        await Promise.all(files.map(async (file) => {
-            if (file.endsWith('.blend') || file.endsWith('.obj') || file.endsWith('.fbx')) {
-                await this.withRetry(
-                    async () => {
-                        const processed = await this.dataProcessor.process3DAsset(path.join(modelPath, file));
-                        const modelData = await this.generator3D.loadModel(processed.processedPath);
-                        this.MODEL_CACHE.set(file, modelData);
-                    },
-                    `Loading model: ${file}`
-                );
+        try {
+            const modelAssets = await this.ipfsService.getAssetByType('blend');
+            for (const assetKey of modelAssets) {
+                const modelData = await this.ipfsService.getAsset(assetKey);
+                this.MODEL_CACHE.set(assetKey, modelData);
             }
-        }));
+            this.emit('initializationCompleted');
+        } catch (error) {
+            this.emit('error', error as Error, 'loadBaseModels');
+            throw error;
+        }
     }
 
     private async loadLyricDatabase() {
@@ -219,29 +218,16 @@ export class CollaborationService extends EventController {
 
     async generate3DModel(prompt: string, config: GenerationConfig) {
         await this.ensureReady();
-        
-        const release = await this.resourceManager.acquire(['gpu', 'model']);
+        this.emit('3dGenerationStarted', prompt);
+
         try {
-            this.emit('3dGenerationStarted', prompt);
-            
-            const baseModel = this.MODEL_CACHE.get(config.baseModel);
-            if (!baseModel) throw new Error(`Base model ${config.baseModel} not found`);
-
-            const result = await this.generator3D.generate({
-                prompt,
-                baseModel,
-                styleReference: config.styleReference,
-                iterations: config.iterations || 1000,
-                temperature: config.temperature || 0.8
-            });
-
-            const outputPath = path.join(this.ASSETS_PATH, '3d', 'generated', `${Date.now()}.blend`);
-            await this.generator3D.saveModel(result, outputPath);
-
-            this.emit('3dGenerationCompleted', outputPath);
-            return outputPath;
-        } finally {
-            release();
+            const baseModel = await this.ipfsService.getAsset(config.baseModel);
+            const result = await this.generator3D.generate(baseModel, prompt, config);
+            this.emit('3dGenerationCompleted', result.modelPath);
+            return result;
+        } catch (error) {
+            this.emit('error', error as Error, 'generate3DModel');
+            throw error;
         }
     }
 
