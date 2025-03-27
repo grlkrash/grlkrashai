@@ -88,4 +88,4 @@ pids
 api.json
 
 # JSDoc
-docs/
+docs/test_minimal/node_modules/
