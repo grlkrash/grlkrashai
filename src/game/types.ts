@@ -1,6 +1,6 @@
 import { WorldState } from '@virtuals-protocol/game'
 
-export interface GRLKRASHWorldState extends WorldState {
+export interface GRLKRASHWorldState {
   lastMentionReceived?: {
     userId: string
     userName: string
@@ -11,6 +11,7 @@ export interface GRLKRASHWorldState extends WorldState {
   }
   agentStatus: 'IDLE' | 'PROCESSING' | 'RESPONDING'
   lastActionTimestamp?: number
+  currentTime: Date
 }
 
 export const initialWorldState: GRLKRASHWorldState = {
