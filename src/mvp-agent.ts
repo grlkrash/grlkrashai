@@ -129,7 +129,7 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
 function extractKeywords(content: string): string[] {
   if (!content) return []
   
-  const keywords = ['meme', 'shill', '$MORE', 'create']
+  const keywords = ['meme', 'shill', '$MORE', 'create', 'perseverance', 'build', 'happy']
   const lowerContent = content.toLowerCase()
   
   return keywords.filter(keyword => 
@@ -148,9 +148,18 @@ async function makeDecision(
   
   // Check for keywords in priority order
   if (keywords.includes('meme')) {
+    // Select appropriate meme image based on other keywords
+    let imageKey = 'default_meme'
+    
+    if (keywords.includes('perseverance') || keywords.includes('build')) {
+      imageKey = 'perseverance_meme'
+    } else if (keywords.includes('happy')) {
+      imageKey = 'happy_meme'
+    }
+    
     return {
       action: 'POST_MEME',
-      imageKey: 'default_meme'
+      imageKey
     }
   }
   
