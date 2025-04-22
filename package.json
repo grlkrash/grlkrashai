@@ -1,6 +1,7 @@
 {
   "name": "grlkrash-bot",
   "version": "1.0.0",
+  "type": "module",
   "main": "src/server.ts",
   "scripts": {
     "start": "node dist/mvp-agent.js",
@@ -9,7 +10,7 @@
     "test:integration": "jest --config jest.config.js --testMatch '**/test/integration/**/*.ts' --runInBand",
     "test:unit": "jest --config jest.config.js --testMatch '**/test/unit/**/*.ts'",
     "test:watch": "jest --watch",
-    "build": "tsc",
+    "build": "tsc && tscpaths -p tsconfig.json -s ./src -o ./dist",
     "lint": "eslint . --ext .ts",
     "clean": "rimraf dist coverage"
   },
@@ -70,6 +71,7 @@
     "spotify-web-api-node": "^5.0.2",
     "ts-jest": "^29.1.1",
     "ts-node": "^10.9.2",
+    "tscpaths": "^0.0.9",
     "typescript": "^5.3.3"
   }
 }

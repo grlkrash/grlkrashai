@@ -11,6 +11,14 @@
     "baseUrl": "./",
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/mvp-agent.ts",
+    "src/config.ts",
+    "src/game/**/*.ts",
+    "src/services/twitter/**/*.ts",
+    "src/services/openai/**/*.ts",
+    "src/services/utils/**/*.ts", // For LoggingService
+    "src/utils/**/*.ts"          // For retry
+  ],
   "exclude": ["node_modules"]
 }
