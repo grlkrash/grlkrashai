@@ -1,3 +1,4 @@
+/*
 import { ethers } from "ethers";
 import dotenv from "dotenv";
 import readline from "readline";
@@ -237,3 +238,4 @@ private async handleAutoModeStop(): Promise<CommandResponse> {
         };
     }
 } 
+*/ 
