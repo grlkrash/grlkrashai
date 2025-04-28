@@ -19,6 +19,9 @@ export const config = {
     accessSecret: process.env.TWITTER_ACCESS_SECRET!,
     bearerToken: process.env.TWITTER_BEARER_TOKEN!,
     grlkrashaiUserId: process.env.TWITTER_GRLKRASHAI_USER_ID
+  },
+  discord: {
+    botToken: process.env.DISCORD_BOT_TOKEN!
   }
 }
 
@@ -31,12 +34,29 @@ const requiredTwitterConfig = [
   { key: 'bearerToken', value: config.twitter.bearerToken }
 ]
 
-const missingConfig = requiredTwitterConfig.filter(item => !item.value)
+// Validate required Discord configuration
+const requiredDiscordConfig = [
+  { key: 'botToken', value: config.discord.botToken }
+]
 
-if (missingConfig.length > 0) {
+// Combine all configuration validations
+const missingTwitterConfig = requiredTwitterConfig.filter(item => !item.value)
+const missingDiscordConfig = requiredDiscordConfig.filter(item => !item.value)
+
+// Check for missing Twitter configuration
+if (missingTwitterConfig.length > 0) {
   console.error('ERROR: Missing required Twitter configuration:')
-  missingConfig.forEach(item => {
+  missingTwitterConfig.forEach(item => {
     console.error(`- Missing TWITTER_${item.key.toUpperCase()} environment variable`)
+  })
+  process.exit(1)
+}
+
+// Check for missing Discord configuration
+if (missingDiscordConfig.length > 0) {
+  console.error('ERROR: Missing required Discord configuration:')
+  missingDiscordConfig.forEach(item => {
+    console.error(`- Missing DISCORD_${item.key.toUpperCase()} environment variable`)
   })
   process.exit(1)
 }
