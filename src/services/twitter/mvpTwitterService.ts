@@ -1,13 +1,15 @@
-import { ETwitterStreamEvent, EUploadMimeType, TweetV2, TwitterV2FilteredStreamResultStream, UserV2, TweetV2PostTweetResult } from 'twitter-api-v2'
+import { ETwitterStreamEvent, EUploadMimeType, TweetV2, UserV2, TweetV2PostTweetResult } from 'twitter-api-v2'
 import { promises as fs } from 'fs'
 import path from 'path'
 import { twitterConfig } from '@/config/twitter.config'
-import { LoggingService } from '@/services/utils/LoggingService'
+import { type Logger } from '@/utils/logger'
 import { retry } from '@/utils/retry'
 import { twitterReadWriteClient, twitterV2ReadOnlyClient, twitterV1Client } from './client'
 import FSStatic from 'fs'
 
-let stream: TwitterV2FilteredStreamResultStream | null = null
+// Create a type that properly represents what searchStream returns
+// The return type is a promise that resolves to a stream, so we need to handle both states
+let stream: Awaited<ReturnType<typeof twitterV2ReadOnlyClient.searchStream>> | null = null
 
 // Interface for tweet options, including media and potential reply info
 export interface PostTweetParams {
@@ -20,7 +22,7 @@ export interface PostTweetParams {
     }
 }
 
-export async function initializeTwitterClient(config: any, logger: LoggingService, retryFn: Function): Promise<boolean> {
+export async function initializeTwitterClient(config: any, logger: Logger, retryFn: Function): Promise<boolean> {
     try {
         // Verify client is initialized by making a simple test call
         await retryFn(async () => {
@@ -38,7 +40,7 @@ export async function initializeTwitterClient(config: any, logger: LoggingServic
 
 export async function startTwitterListener(
     handleMentionCallback: (tweetData: { text: string; user: UserV2; timestamp: string; id: string }) => Promise<void>,
-    logger: LoggingService,
+    logger: Logger,
     retryFn: Function
 ): Promise<void> {
     try {
@@ -60,14 +62,14 @@ export async function startTwitterListener(
                 'tweet.fields': ['created_at']
             })
 
-            stream.on(ETwitterStreamEvent.Data, async (data) => {
+            stream.on(ETwitterStreamEvent.Data, async (data: any) => {
                 try {
-                    const authorUser = data.includes?.users?.find(user => user.id === data.data.author_id)
+                    const authorUser = data.includes?.users?.find((user: UserV2) => user.id === data.data.author_id)
                     if (authorUser) {
                         await handleMentionCallback({
                             text: data.data.text,
                             user: authorUser,
-                            timestamp: data.data.created_at,
+                            timestamp: data.data.created_at ?? new Date().toISOString(),
                             id: data.data.id
                         })
                     }
@@ -76,7 +78,7 @@ export async function startTwitterListener(
                 }
             })
 
-            stream.on(ETwitterStreamEvent.ConnectionError, (error) => {
+            stream.on(ETwitterStreamEvent.ConnectionError, (error: Error) => {
                 logger.error('Twitter stream connection error', { error })
             })
 
@@ -88,11 +90,11 @@ export async function startTwitterListener(
                 logger.warn('Twitter stream connection lost')
             })
 
-            stream.on(ETwitterStreamEvent.TweetParseError, (error) => {
+            stream.on(ETwitterStreamEvent.TweetParseError, (error: Error) => {
                 logger.error('Twitter stream tweet parse error', { error })
             })
 
-            stream.on(ETwitterStreamEvent.Ready, () => {
+            stream.on('ready', () => {
                 logger.info('Twitter stream connected and ready')
             })
         })
@@ -110,7 +112,7 @@ export async function startTwitterListener(
  * @param retryFn - Retry function for resilient API calls 
  * @returns The ID of the posted tweet, or null on failure.
  */
-export async function postTweet(options: PostTweetParams, logger: LoggingService, retryFn: Function): Promise<string | null> {
+export async function postTweet(options: PostTweetParams, logger: Logger, retryFn: Function): Promise<string | null> {
     try {
         const result = await retryFn(async () => {
             logger.info(`Attempting to post tweet (replyTo: ${options.reply?.in_reply_to_tweet_id ?? 'N/A'})...`)
@@ -138,7 +140,7 @@ export async function postTweet(options: PostTweetParams, logger: LoggingService
     }
 }
 
-export async function postTextTweet(text: string, logger: LoggingService, retryFn: Function): Promise<boolean> {
+export async function postTextTweet(text: string, logger: Logger, retryFn: Function): Promise<boolean> {
     try {
         const result = await retryFn(async () => {
             logger.info('Attempting to post text tweet')
@@ -163,7 +165,7 @@ export async function postTextTweet(text: string, logger: LoggingService, retryF
  */
 export async function uploadMediaFromPath(
     filePath: string, 
-    logger: LoggingService, 
+    logger: Logger, 
     retryFn: Function,
     mimeType?: string
 ): Promise<string | null> {
@@ -205,7 +207,7 @@ export async function uploadMediaFromPath(
 export async function postMediaTweetFromPath(
     status: string, 
     mediaPath: string, 
-    logger: LoggingService, 
+    logger: Logger, 
     retryFn: Function,
     replyToTweetId?: string
 ): Promise<boolean> {
@@ -245,7 +247,7 @@ export async function postMediaTweetFromPath(
 export async function postImageTweet(
     text: string,
     imageKey: string | undefined,
-    logger: LoggingService,
+    logger: Logger,
     retryFn: Function
 ): Promise<boolean> {
     if (!imageKey) {
@@ -295,10 +297,11 @@ export async function postImageTweet(
     }
 }
 
-export async function shutdownTwitter(logger: LoggingService): Promise<void> {
+export async function shutdownTwitter(logger: Logger): Promise<void> {
     try {
         if (stream) {
-            await stream.close()
+            // Close the stream if it exists
+            stream.close()
             logger.info('Twitter stream closed')
         }
     } catch (error) {
