@@ -10,7 +10,7 @@
     "test:integration": "jest --config jest.config.js --testMatch '**/test/integration/**/*.ts' --runInBand",
     "test:unit": "jest --config jest.config.js --testMatch '**/test/unit/**/*.ts'",
     "test:watch": "jest --watch",
-    "build": "tsc && tscpaths -p tsconfig.json -s ./src -o ./dist",
+    "build": "tsc",
     "lint": "eslint . --ext .ts",
     "clean": "rimraf dist coverage"
   },

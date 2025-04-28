@@ -18,8 +18,8 @@
     "src/game/**/*.ts",
     "src/services/twitter/**/*.ts",
     "src/services/openai/**/*.ts",
-    "src/services/utils/**/*.ts", // For LoggingService
-    "src/utils/**/*.ts"          // For retry
+    "src/services/utils/**/*.ts", 
+    "src/utils/**/*.ts"          
   ],
   "exclude": ["node_modules"]
 }
