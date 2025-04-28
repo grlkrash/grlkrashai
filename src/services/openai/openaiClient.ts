@@ -1,10 +1,7 @@
 import { OpenAI } from 'openai'
 import 'dotenv/config'
-import { LoggingService } from '../../services/utils/LoggingService'
-import { retry } from '../../utils/retry'
-
-// Initialize logger for this module
-const logger = new LoggingService('OpenAIClient')
+import logger from '@/utils/logger'
+import { retry } from '@/utils/retry'
 
 // Initialize OpenAI client
 const openai = new OpenAI({ 
@@ -25,7 +22,7 @@ export async function generateTextResponse(prompt: string): Promise<string> {
   })
 
   try {
-    return await retry(async () => {
+    return await retry(3, async () => {
       const completion = await openai.chat.completions.create({
         model: 'gpt-3.5-turbo',
         messages: [{ role: 'user', content: prompt }],
@@ -41,7 +38,7 @@ export async function generateTextResponse(prompt: string): Promise<string> {
 
       logger.info('Successfully generated text response')
       return resultText
-    })
+    }, 1000)
   } catch (error) {
     logger.error('Error generating text response from OpenAI', { error })
     return '// Unable to generate response //'

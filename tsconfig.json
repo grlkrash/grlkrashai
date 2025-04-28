@@ -9,7 +9,8 @@
     "allowJs": true,
     "outDir": "dist",
     "baseUrl": "./",
-    "paths": { "@/*": ["./src/*"] }
+    "paths": { "@/*": ["./src/*"] },
+    "skipLibCheck": true
   },
   "include": [
     "src/mvp-agent.ts",

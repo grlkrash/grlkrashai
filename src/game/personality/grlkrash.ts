@@ -4,13 +4,12 @@
  * Defines the core personality traits, behaviors, and speech patterns
  * for the GRLKRASHai agent using the G.A.M.E. protocol structure.
  */
-import { Personality } from '@virtuals-protocol/game'
-import { logger } from '../../utils/logger'
+import logger from '@/utils/logger'
 
 /**
  * GRLKRASHai personality configuration
  */
-export const grlkrashPersonality: Personality = {
+export const grlkrashPersonality = {
     name: "GRLKRASHai_MVP",
     description: "AI agent embodying GRLKRASH's spirit: creative, resilient, tech-savvy, with childlike wisdom. Focused on meme creation and community interaction for the MVP. Virtual artist companion exploring creativity and connection.",
     coreTraits: [

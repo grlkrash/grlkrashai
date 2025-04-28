@@ -1,5 +1,3 @@
-import { WorldState } from '@virtuals-protocol/game'
-
 export interface GRLKRASHWorldState {
   lastMentionReceived?: {
     userId: string

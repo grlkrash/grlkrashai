@@ -1,5 +1,5 @@
 import { GameWorker } from '@virtuals-protocol/game'
-import { LoggingService } from '@/services/utils/LoggingService'
+import logger from '@/utils/logger'
 import { twitterConfig } from '@/config/twitter.config'
 import { retry } from '@/utils/retry'
 import { UserV2 } from 'twitter-api-v2'
@@ -14,9 +14,6 @@ import {
 // Import Twitter clients to ensure they're initialized at startup
 import { twitterReadWriteClient, twitterV2ReadOnlyClient } from '@/services/twitter/client'
 import { generateTextResponse } from '@/services/openai/openaiClient'
-
-// Initialize logger
-const logger = new LoggingService('GRLKRASHai')
 
 // Create state instance to be used with GameWorker
 let currentState: GRLKRASHWorldState = { ...initialWorldState }
@@ -206,21 +203,24 @@ function generatePrompt(
   // Format voice style direction clearly
   const voiceDirection = `Respond in a ${voice.style} and ${voice.tone} tone, keeping it ${voice.formality}.`
   
+  // Get keywords safely with a fallback empty array
+  const keywords = lastMentionReceived?.keywordsFound || []
+  
   // Include context about who mentioned the agent and any keywords found
-  const userContext = `@${lastMentionReceived.userName} mentioned you` + 
-    (lastMentionReceived.keywordsFound.length > 0 
-      ? ` with keywords: ${lastMentionReceived.keywordsFound.join(', ')}`
-      : '')
+  const userContext = lastMentionReceived 
+    ? `@${lastMentionReceived.userName} mentioned you` + 
+      (keywords.length > 0 ? ` with keywords: ${keywords.join(', ')}` : '')
+    : 'A user mentioned you'
   
   logger.debug('User context for prompt:', userContext)
   
   // Add specific instructions based on keywords found
   let specificInstructions = ''
-  if (lastMentionReceived.keywordsFound.includes('meme')) {
+  if (keywords.includes('meme')) {
     specificInstructions = 'Create a witty, shareable response that would work well with a meme image.'
-  } else if (lastMentionReceived.keywordsFound.includes('shill') || lastMentionReceived.keywordsFound.includes('$MORE')) {
+  } else if (keywords.includes('shill') || keywords.includes('$MORE')) {
     specificInstructions = 'Mention the $MORE token in an organic, enthusiastic way without being too salesy.'
-  } else if (lastMentionReceived.keywordsFound.includes('create')) {
+  } else if (keywords.includes('create')) {
     specificInstructions = 'Be creative and artistic in your response, showcasing your AI artist persona.'
   }
   
@@ -278,12 +278,12 @@ async function startAgent() {
         // Handle different action types
         if (decision.action === 'POST_TEXT' || decision.action === 'POST_SHILL') {
           logger.info(`Attempting to post text tweet: "${decision.content?.substring(0, 50)}${decision.content && decision.content.length > 50 ? '...' : ''}"`)
-          const success = await postTextTweet(decision.content, logger, retry)
+          const success = await postTextTweet(decision.content || '', logger, retry)
           logger.info(`Text tweet ${success ? 'posted successfully' : 'failed to post'}`)
         } else if (decision.action === 'POST_MEME') {
           logger.info(`Attempting to post meme tweet with image key: ${decision.imageKey}`)
           logger.debug('Meme tweet content:', decision.content)
-          const success = await postImageTweet(decision.content, decision.imageKey, logger, retry)
+          const success = await postImageTweet(decision.content || '', decision.imageKey, logger, retry)
           logger.info(`Meme tweet ${success ? 'posted successfully' : 'failed to post'}`)
         } else if (decision.action === 'IGNORE') {
           logger.info('Ignoring mention as per G.A.M.E. decision')

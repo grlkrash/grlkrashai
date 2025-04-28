@@ -1,6 +1,6 @@
 import { TwitterApi } from 'twitter-api-v2';
 import config from '../../config'; // Assuming config is at src/config.ts
-import { logger } from '../../utils/logger'; // Assuming logger is at src/utils/logger.ts
+import logger from '@/utils/logger'; // Assuming logger is at src/utils/logger.ts
 
 logger.info('Initializing Twitter clients...');
 
