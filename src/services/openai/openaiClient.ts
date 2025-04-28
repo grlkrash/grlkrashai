@@ -1,7 +1,7 @@
 import { OpenAI } from 'openai'
 import 'dotenv/config'
-import logger from '@/utils/logger'
-import { retry } from '@/utils/retry'
+import logger from '../../utils/logger.js'
+import { retry } from '../../utils/retry.js'
 
 // Initialize OpenAI client
 const openai = new OpenAI({ 

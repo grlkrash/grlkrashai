@@ -1,19 +1,19 @@
 import { GameWorker } from '@virtuals-protocol/game'
-import logger from '@/utils/logger'
-import { twitterConfig } from '@/config/twitter.config'
-import { retry } from '@/utils/retry'
+import logger from './utils/logger.js'
+import config from './config.js'
+import { retry } from './utils/retry.js'
 import { UserV2 } from 'twitter-api-v2'
-import { GRLKRASHWorldState, initialWorldState } from '@/game/types'
+import { GRLKRASHWorldState, initialWorldState } from './game/types.js'
 import {
   initializeTwitterClient,
   startTwitterListener,
   postTextTweet,
   postImageTweet,
   shutdownTwitter
-} from '@/services/twitter/mvpTwitterService'
+} from './services/twitter/mvpTwitterService.js'
 // Import Twitter clients to ensure they're initialized at startup
-import { twitterReadWriteClient, twitterV2ReadOnlyClient } from '@/services/twitter/client'
-import { generateTextResponse } from '@/services/openai/openaiClient'
+import { twitterReadWriteClient, twitterV2ReadOnlyClient } from './services/twitter/client.js'
+import { generateTextResponse } from './services/openai/openaiClient.js'
 
 // Create state instance to be used with GameWorker
 let currentState: GRLKRASHWorldState = { ...initialWorldState }
@@ -245,7 +245,7 @@ async function startAgent() {
     logger.info('Starting GRLKRASHai agent...')
 
     // Verify Twitter client is initialized
-    const clientInitialized = await initializeTwitterClient(twitterConfig, logger, retry)
+    const clientInitialized = await initializeTwitterClient(config.twitter, logger, retry)
     if (!clientInitialized) {
       throw new Error('Failed to verify Twitter client')
     }

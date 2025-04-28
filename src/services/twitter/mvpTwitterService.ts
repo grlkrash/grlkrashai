@@ -1,10 +1,10 @@
 import { ETwitterStreamEvent, EUploadMimeType, TweetV2, UserV2, TweetV2PostTweetResult } from 'twitter-api-v2'
 import { promises as fs } from 'fs'
 import path from 'path'
-import { twitterConfig } from '@/config/twitter.config'
-import { type Logger } from '@/utils/logger'
-import { retry } from '@/utils/retry'
-import { twitterReadWriteClient, twitterV2ReadOnlyClient, twitterV1Client } from './client'
+import config from '../../config.js'
+import { type Logger } from '../../utils/logger.js'
+import { retry } from '../../utils/retry.js'
+import { twitterReadWriteClient, twitterV2ReadOnlyClient, twitterV1Client } from './client.js'
 import FSStatic from 'fs'
 
 // Create a type that properly represents what searchStream returns

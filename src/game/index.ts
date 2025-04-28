@@ -6,7 +6,7 @@
  */
 
 // Export types
-export * from './types'
+export * from './types.js'
 
 // Export personality configuration
-export * from './personality' 
+export * from './personality/index.js' 

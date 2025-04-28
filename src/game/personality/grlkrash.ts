@@ -4,7 +4,7 @@
  * Defines the core personality traits, behaviors, and speech patterns
  * for the GRLKRASHai agent using the G.A.M.E. protocol structure.
  */
-import logger from '@/utils/logger'
+import logger from '../../utils/logger.js'
 
 /**
  * GRLKRASHai personality configuration
