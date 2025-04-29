@@ -2,17 +2,15 @@ import { GameWorker } from '@virtuals-protocol/game'
 import logger from './utils/logger.js'
 import config from './config.js'
 import { retry } from './utils/retry.js'
-import { UserV2 } from 'twitter-api-v2'
 import { GRLKRASHWorldState, initialWorldState } from './game/types.js'
-import {
-  initializeTwitterClient,
-  startTwitterListener,
-  postTextTweet,
-  postImageTweet,
-  shutdownTwitter
-} from './services/twitter/mvpTwitterService.js'
-// Import Twitter clients to ensure they're initialized at startup
-import { twitterReadWriteClient, twitterV2ReadOnlyClient } from './services/twitter/client.js'
+import { 
+  initializeDiscordClient, 
+  shutdownDiscordClient, 
+  getDiscordClient,
+  sendDiscordMessage,
+  sendDiscordImageMessage
+} from './services/discord/discordService.js'
+import { Client, Events, Message, User as DiscordUser } from 'discord.js'
 import { generateTextResponse } from './services/openai/openaiClient.js'
 
 // Create state instance to be used with GameWorker
@@ -23,9 +21,9 @@ interface ProcessInputArgs {
   type: string
   content: string
   context: {
-    user: UserV2
+    user: DiscordUser
     timestamp: string
-    tweetId: string
+    messageId: string
   }
 }
 
@@ -57,9 +55,9 @@ const worker = new GameWorker({
 worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> => {
   // 1. Analyze input data
   const { type, content, context } = input
-  const { user, timestamp, tweetId } = context
+  const { user, timestamp, messageId } = context
   
-  logger.info(`Processing ${type} from @${user.username}: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`)
+  logger.info(`Processing ${type} from ${user.username}: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`)
   
   // 2. Define personality configuration
   const personality = {
@@ -83,7 +81,7 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
   currentState.lastMentionReceived = {
     userId: user.id,
     userName: user.username,
-    tweetId,
+    messageId, // Use messageId directly as field name has been updated
     text: content,
     timestamp: Date.now(),
     keywordsFound: extractKeywords(content)
@@ -92,10 +90,10 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
   currentState.lastActionTimestamp = Date.now()
   currentState.currentTime = new Date()
   
-  logger.debug('Updated currentState with new mention data:', {
+  logger.debug('Updated currentState with new message data:', {
     userId: user.id,
     userName: user.username,
-    tweetId,
+    messageId,
     keywordsFound: currentState.lastMentionReceived.keywordsFound,
     agentStatus: currentState.agentStatus
   })
@@ -184,7 +182,7 @@ function generatePrompt(
   state: GRLKRASHWorldState,
   personality: any
 ): string {
-  logger.info('Generating prompt for OpenAI based on mention and personality')
+  logger.info('Generating prompt for OpenAI based on message and personality')
   
   const { traits, voice } = personality
   const { lastMentionReceived } = state
@@ -208,7 +206,7 @@ function generatePrompt(
   
   // Include context about who mentioned the agent and any keywords found
   const userContext = lastMentionReceived 
-    ? `@${lastMentionReceived.userName} mentioned you` + 
+    ? `${lastMentionReceived.userName} mentioned you` + 
       (keywords.length > 0 ? ` with keywords: ${keywords.join(', ')}` : '')
     : 'A user mentioned you'
   
@@ -229,9 +227,9 @@ function generatePrompt(
   // Build the final prompt
   return `You are GRLKRASH, an AI artist who is ${personalityTraits}.
   
-Task: Generate a Twitter response (max 280 chars) to ${userContext}.
+Task: Generate a Discord response to ${userContext}.
 
-Their mention: "${content}"
+Their message: "${content}"
 
 ${specificInstructions}
 
@@ -244,75 +242,85 @@ async function startAgent() {
   try {
     logger.info('Starting GRLKRASHai agent...')
 
-    // Verify Twitter client is initialized
-    const clientInitialized = await initializeTwitterClient(config.twitter, logger, retry)
-    if (!clientInitialized) {
-      throw new Error('Failed to verify Twitter client')
+    // Initialize Discord client
+    const client = await initializeDiscordClient();
+    if (!client || !client.user) {
+      throw new Error('Failed to initialize Discord client or client.user is not available.');
     }
-    logger.info('Twitter client verified successfully')
+    logger.info(`Discord client initialized, logged in as ${client.user.tag}`);
 
-    // Define mention handler
-    async function handleMention(tweetData: {
-      text: string
-      user: UserV2
-      timestamp: string
-      id: string
-    }) {
-      logger.info(`Received mention from @${tweetData.user.username}: ${tweetData.text}`)
-
+    // Set up message handler
+    client.on(Events.MessageCreate, async (message: Message) => {
+      logger.debug('[DEBUG] MessageCreate event fired.', { channelId: message.channel.id, authorId: message.author.id, content: message.content });
+      
+      // Ignore messages from bots (including self)
+      if (message.author.bot) return;
+      
+      // Ensure client.user is not null before checking mentions
+      if (!client.user) {
+        logger.error('Discord client.user is null');
+        return;
+      }
+      
+      // Check if the message mentions the bot or contains the bot's name
+      const isMentioned = message.mentions.users.has(client.user.id) || 
+                         message.content.toLowerCase().includes('grlkrash');
+      
+      if (!isMentioned) return;
+      
+      logger.info(`Received message from ${message.author.username}: ${message.content}`);
+      
       try {
         // Process input through G.A.M.E.
-        logger.info('Sending mention to G.A.M.E worker for processing')
+        logger.info('Sending message to G.A.M.E worker for processing');
         const decision = await worker.processInput({
-          type: 'mention',
-          content: tweetData.text,
+          type: 'message',
+          content: message.content,
           context: {
-            user: tweetData.user,
-            timestamp: tweetData.timestamp,
-            tweetId: tweetData.id
+            user: message.author,
+            timestamp: message.createdAt.toISOString(),
+            messageId: message.id
           }
-        })
+        });
 
-        logger.info('G.A.M.E. decision:', decision)
-
+        logger.info('G.A.M.E. decision:', decision);
+        
         // Handle different action types
         if (decision.action === 'POST_TEXT' || decision.action === 'POST_SHILL') {
-          logger.info(`Attempting to post text tweet: "${decision.content?.substring(0, 50)}${decision.content && decision.content.length > 50 ? '...' : ''}"`)
-          const success = await postTextTweet(decision.content || '', logger, retry)
-          logger.info(`Text tweet ${success ? 'posted successfully' : 'failed to post'}`)
+          logger.info(`Attempting to send text message: "${decision.content?.substring(0, 50)}${decision.content && decision.content.length > 50 ? '...' : ''}"`);
+          const success = await sendDiscordMessage(message.channelId, decision.content || '');
+          logger.info(`Text message ${success ? 'sent successfully' : 'failed to send'}`);
         } else if (decision.action === 'POST_MEME') {
-          logger.info(`Attempting to post meme tweet with image key: ${decision.imageKey}`)
-          logger.debug('Meme tweet content:', decision.content)
-          const success = await postImageTweet(decision.content || '', decision.imageKey, logger, retry)
-          logger.info(`Meme tweet ${success ? 'posted successfully' : 'failed to post'}`)
+          logger.info(`Attempting to send meme message with image key: ${decision.imageKey}`);
+          logger.debug('Meme message content:', decision.content);
+          const success = await sendDiscordImageMessage(message.channelId, decision.content || '', decision.imageKey || 'default_meme');
+          logger.info(`Meme message ${success ? 'sent successfully' : 'failed to send'}`);
         } else if (decision.action === 'IGNORE') {
-          logger.info('Ignoring mention as per G.A.M.E. decision')
+          logger.info('Ignoring message as per G.A.M.E. decision');
         }
       } catch (error) {
-        logger.error('Error processing mention:', error)
+        logger.error('Error processing message:', error);
       }
-    }
+    });
 
-    // Start Twitter listener
-    await startTwitterListener(handleMention, logger, retry)
-    logger.info('Twitter listener started successfully')
-    logger.info('GRLKRASHai agent is now running')
+    logger.info('Discord message handler set up successfully');
+    logger.info('GRLKRASHai agent is now running');
 
   } catch (error) {
-    logger.error('Failed to start agent:', error)
-    process.exit(1)
+    logger.error('Failed to start agent:', error);
+    process.exit(1);
   }
 }
 
 // Handle graceful shutdown
 process.on('SIGINT', async () => {
-  logger.info('Shutting down GRLKRASHai agent...')
-  await shutdownTwitter(logger)
-  process.exit(0)
-})
+  logger.info('Shutting down GRLKRASHai agent...');
+  await shutdownDiscordClient();
+  process.exit(0);
+});
 
 // Start the agent
 startAgent().catch((error) => {
-  logger.error('Fatal error in agent:', error)
-  process.exit(1)
-}) 
+  logger.error('Fatal error in agent:', error);
+  process.exit(1);
+}); 

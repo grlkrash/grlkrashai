@@ -2,7 +2,7 @@ export interface GRLKRASHWorldState {
   lastMentionReceived?: {
     userId: string
     userName: string
-    tweetId: string
+    messageId: string
     text: string
     timestamp: number
     keywordsFound: string[]
