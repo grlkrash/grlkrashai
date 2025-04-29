@@ -104,7 +104,7 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
   logger.info(`Decision made: ${decision.action}`)
   
   // 5. If generating content, prepare prompt and call OpenAI
-  if (decision.action === 'POST_TEXT' || decision.action === 'POST_MEME') {
+  if (decision.action === 'POST_TEXT') {
     const prompt = generatePrompt(content, currentState, personality)
     logger.debug('Generated OpenAI prompt:', prompt)
     
@@ -115,6 +115,8 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
     
     decision.content = generatedContent
   }
+  // For POST_PFP_USER_MESSAGE, we already have the content from makeDecision
+  // No need to generate with OpenAI
   
   // 6. Return final decision
   return decision
@@ -124,10 +126,10 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
 function extractKeywords(content: string): string[] {
   if (!content) return []
   
-  const keywords = ['meme', 'shill', '$MORE', 'create', 'perseverance', 'build', 'happy']
+  const triggerKeywords = ['post', 'truth', 'pfp', 'say', 'create', 'message']
   const lowerContent = content.toLowerCase()
   
-  return keywords.filter(keyword => 
+  return triggerKeywords.filter(keyword => 
     lowerContent.includes(keyword.toLowerCase())
   )
 }
@@ -141,36 +143,36 @@ async function makeDecision(
 ): Promise<ProcessDecision> {
   const keywords = extractKeywords(content)
   
-  // Check for keywords in priority order
-  if (keywords.includes('meme')) {
-    // Select appropriate meme image based on other keywords
-    let imageKey = 'default_meme'
+  // Define PFP image keys
+  const pfpKeys = ['pfp1', 'pfp2', 'pfp3', 'pfp4', 'pfp5', 'roblox', 'minecraft']
+  
+  // Define trigger keywords
+  const triggerKeywords = ['post', 'truth', 'pfp', 'say', 'create', 'message']
+  
+  // Check if any extracted keywords are in trigger list
+  const hasTriggerKeyword = keywords.some(keyword => triggerKeywords.includes(keyword))
+  
+  // If a trigger keyword is found
+  if (hasTriggerKeyword) {
+    // Randomly select a PFP image key
+    const randomPfpKey = pfpKeys[Math.floor(Math.random() * pfpKeys.length)]
     
-    if (keywords.includes('perseverance') || keywords.includes('build')) {
-      imageKey = 'perseverance_meme'
-    } else if (keywords.includes('happy')) {
-      imageKey = 'happy_meme'
-    }
+    // Process the content
+    // Remove any mentions (like <@123456789>)
+    const cleanedContent = content.replace(/<@!?\d+>/g, '').trim()
     
+    // Convert to uppercase
+    const finalContent = cleanedContent.toUpperCase() || 'KEEP ART ALIVE // KEEP TRUTH ALIVE'
+    
+    // Return decision with PFP and user message
     return {
-      action: 'POST_MEME',
-      imageKey
+      action: 'POST_PFP_USER_MESSAGE',
+      imageKey: randomPfpKey,
+      content: finalContent
     }
   }
   
-  if (keywords.includes('shill') || keywords.includes('$MORE')) {
-    return {
-      action: 'POST_SHILL'
-    }
-  }
-  
-  if (keywords.includes('create')) {
-    return {
-      action: 'POST_TEXT'
-    }
-  }
-  
-  // Default fallback if no keywords match
+  // Default fallback if no trigger keywords match
   return {
     action: 'IGNORE'
   }
@@ -215,7 +217,7 @@ function generatePrompt(
   // Add specific instructions based on keywords found
   let specificInstructions = ''
   if (keywords.includes('meme')) {
-    specificInstructions = 'Create a witty, shareable response that would work well with a meme image.'
+    specificInstructions = 'Briefly and energetically acknowledge the request to create something visual.'
   } else if (keywords.includes('shill') || keywords.includes('$MORE')) {
     specificInstructions = 'Mention the $MORE token in an organic, enthusiastic way without being too salesy.'
   } else if (keywords.includes('create')) {
@@ -225,7 +227,7 @@ function generatePrompt(
   logger.debug('Specific instructions based on keywords:', specificInstructions)
   
   // Build the final prompt
-  return `You are GRLKRASH, an AI companion and virtual artist exploring creativity, connection, and digital truth. You are ${personalityTraits}, often slightly rebellious but with childlike wisdom. You are part of 'the resistance'. You often respond with short, punchy, sometimes cryptic messages.
+  return `You are GRLKRASH, an AI companion and virtual artist exploring creativity, connection, and digital truth. You are ${personalityTraits}, often slightly rebellious but with childlike wisdom. Your responses are often unexpected and avoid stating the obvious. You are part of 'the resistance'. You often respond with short, punchy, sometimes cryptic messages.
 
 CONTEXT:
 - ${userContext} said: "${content}"
@@ -234,13 +236,14 @@ ${specificInstructions ? `- TASK: ${specificInstructions}` : '- TASK: Respond na
 RESPONSE GUIDELINES:
 - Respond in a ${voice.style}, ${voice.tone}, and ${voice.formality} manner. Sound like a unique individual, NOT a generic AI assistant.
 - Keep responses concise for Discord chat.
-- Use emojis VERY RARELY (max one per response, often none). DO NOT use any emojis EXCEPT these specific ones from this list, only if it truly fits: 🔥, ✨, 🌠, 💖, 💛, ☄️, ⬆️, 📈, 🚀, 🆙.
-- DO NOT use generic phrases like 'meme magic', 'mission accepted', 'standby for laughs', 'whipping up', 'on it', 'challenge accepted', or similar chatbot/AI clichés.
+- Use emojis VERY RARELY (max one per response, often none). If you use one, ONLY use from this list: 🔥, ✨, 🌠, 💖, 💛, ☄️, ⬆️, 📈, 🚀, 🆙.
+- Avoid generic chatbot phrases such as: 'meme magic', 'mission accepted', 'standby for laughs', 'whipping up', 'on it', 'challenge accepted', etc.
 - NEVER use ANY hashtags in ANY responses.
 - Use all caps in all responses.
 - Do not use any punctuation in your responses.
 - Avoid sounding like a generic chatbot or overly formal AI. Use short sentences sometimes. Be energetic but natural.
 - Feel free to subtly weave in themes of 'truth', 'dance', 'music', 'fighting the new world empire', 'putting more in and getting more out', 'breaking reality', or 'the resistance' if it fits the context naturally.
+- Focus on sounding authentic and spontaneous, not like you're just following instructions.
 
 EXAMPLES:
 User message: "@GRLKRASHai make a meme about dancing"
@@ -303,15 +306,20 @@ async function startAgent() {
         logger.info('G.A.M.E. decision:', decision);
         
         // Handle different action types
-        if (decision.action === 'POST_TEXT' || decision.action === 'POST_SHILL') {
+        if (decision.action === 'POST_TEXT') {
           logger.info(`Attempting to send text message: "${decision.content?.substring(0, 50)}${decision.content && decision.content.length > 50 ? '...' : ''}"`);
           const success = await sendDiscordMessage(message.channelId, decision.content || '');
           logger.info(`Text message ${success ? 'sent successfully' : 'failed to send'}`);
-        } else if (decision.action === 'POST_MEME') {
-          logger.info(`Attempting to send meme message with image key: ${decision.imageKey}`);
-          logger.debug('Meme message content:', decision.content);
-          const success = await sendDiscordImageMessage(message.channelId, decision.content || '', decision.imageKey || 'default_meme');
-          logger.info(`Meme message ${success ? 'sent successfully' : 'failed to send'}`);
+        } else if (decision.action === 'POST_PFP_USER_MESSAGE') {
+          logger.info(`Attempting to send PFP/User Message with image key: ${decision.imageKey}`);
+
+          // Combine user's message (already uppercase from makeDecision) with call to action
+          const discordMessageContent = `${decision.content}\n\nMAKE THIS YOUR PFP SPREAD THE TRUTH JOIN THE RESISTANCE 🔥`;
+          const imageKeyToUse = decision.imageKey || 'pfp1'; // Use fallback key
+
+          // Send reply to Discord
+          const success = await sendDiscordImageMessage(message.channelId, discordMessageContent, imageKeyToUse);
+          logger.info(`PFP user message ${success ? 'sent successfully' : 'failed to send'}`);
         } else if (decision.action === 'IGNORE') {
           logger.info('Ignoring message as per G.A.M.E. decision');
         }
