@@ -1,6 +1,9 @@
 import { Client, Events, GatewayIntentBits, TextChannel, MessageCreateOptions } from 'discord.js';
 import logger from '../../utils/logger.js';
 import config from '../../config.js';
+import path from 'path';
+import * as url from 'url';
+import { promises as fs } from 'fs';
 
 // Declare the client variable at the module scope
 let client: Client | null = null;
@@ -105,8 +108,8 @@ export async function sendDiscordMessage(channelId: string, content: string): Pr
         
         await (channel as TextChannel).send(content);
         return true;
-    } catch (error) {
-        logger.error('Error sending Discord message:', error);
+    } catch (error: any) {
+        logger.error('Error sending Discord message', { channelId, message: error?.message, code: error?.code, stack: error?.stack });
         return false;
     }
 }
@@ -119,6 +122,7 @@ export async function sendDiscordMessage(channelId: string, content: string): Pr
  * @returns Promise resolving to a boolean indicating success/failure
  */
 export async function sendDiscordImageMessage(channelId: string, content: string, imageKey: string): Promise<boolean> {
+    let imagePath = '';
     try {
         if (!client) {
             logger.error('Discord client not initialized');
@@ -136,22 +140,34 @@ export async function sendDiscordImageMessage(channelId: string, content: string
             return false;
         }
         
-        // TODO: Implement proper image handling based on imageKey
-        // For now, we'll use a placeholder URL
-        const imageUrl = `https://example.com/${imageKey}.png`;
+        // Map image key to filename
+        const imageMap: { [key: string]: string } = {
+            'pfp1': 'pfp1.png',
+            'pfp2': 'pfp2.png',
+            'pfp3': 'pfp3.png',
+            'pfp4': 'pfp4.png',
+            'pfp5': 'pfp5.png',
+            'roblox': 'pfproblox.png',
+            'minecraft': 'pfpminecraft.png'
+        };
+        
+        const filename = imageMap[imageKey] || 'pfp1.png';
+        const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
+        imagePath = path.join(__dirname, '../../..', 'public/images/pfp', filename);
+        logger.info('Attempting to attach image from path:', imagePath);
         
         const messageOptions: MessageCreateOptions = {
             content,
             files: [{
-                attachment: imageUrl,
-                name: `${imageKey}.png`
+                attachment: imagePath,
+                name: filename
             }]
         };
         
         await (channel as TextChannel).send(messageOptions);
         return true;
-    } catch (error) {
-        logger.error('Error sending Discord image message:', error);
+    } catch (error: any) {
+        logger.error('Error sending Discord image message', { channelId, imageKey, imagePath, message: error?.message, code: error?.code, stack: error?.stack });
         return false;
     }
 } 

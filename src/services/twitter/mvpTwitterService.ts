@@ -11,6 +11,9 @@ import FSStatic from 'fs'
 // The return type is a promise that resolves to a stream, so we need to handle both states
 let stream: Awaited<ReturnType<typeof twitterV2ReadOnlyClient.searchStream>> | null = null
 
+let sinceId: string | undefined = undefined; // To track the last processed tweet ID
+let pollingInterval: NodeJS.Timeout | null = null; // To hold the interval timer
+
 // Interface for tweet options, including media and potential reply info
 export interface PostTweetParams {
     status: string;
@@ -25,84 +28,104 @@ export interface PostTweetParams {
 export async function initializeTwitterClient(config: any, logger: Logger, retryFn: Function): Promise<boolean> {
     try {
         // Verify client is initialized by making a simple test call
-        await retryFn(async () => {
+        await retryFn(3, async () => {
             // Simple verification that the client is ready
             await twitterReadWriteClient.v2.me()
-        })
+        }, 1000)
         
         logger.info('Twitter client verified successfully')
         return true
-    } catch (error) {
-        logger.error('Failed to verify Twitter client', { error })
+    } catch (error: any) {
+        logger.error('Failed to verify Twitter client', { message: error?.message, code: error?.code, apiErrors: error?.errors, stack: error?.stack })
         return false
     }
 }
 
-export async function startTwitterListener(
+export async function startMentionPolling(
     handleMentionCallback: (tweetData: { text: string; user: UserV2; timestamp: string; id: string }) => Promise<void>,
     logger: Logger,
     retryFn: Function
 ): Promise<void> {
-    try {
-        const rules = [{ value: '@GRLKRASHai (meme OR shill OR $MORE OR create OR hello)', tag: 'grlkrash_mentions' }]
+    // Inside the startMentionPolling function body:
+    const POLLING_INTERVAL_MS = 60 * 1000; // Poll every 60 seconds
 
-        await retryFn(async () => {
-            const existingRules = await twitterV2ReadOnlyClient.streamRules()
-            if (existingRules.data?.length) {
-                await twitterV2ReadOnlyClient.updateStreamRules({
-                    delete: { ids: existingRules.data.map(rule => rule.id) }
-                })
+    logger.info(`Starting Twitter mention polling every ${POLLING_INTERVAL_MS / 1000} seconds...`);
+
+    if (pollingInterval) {
+        logger.warn('Polling already active. Clearing existing interval.');
+        clearInterval(pollingInterval);
+    }
+
+    // Function to perform a single poll
+    const performPoll = async () => {
+        logger.debug('Polling for mentions...', { sinceId });
+        try {
+            // Use the v1.1 client (User context)
+            const mentions = await twitterReadWriteClient.v1.mentionTimeline({
+                since_id: sinceId,
+                count: 50, // Fetch up to 50 mentions per poll
+                tweet_mode: 'extended' // Use extended mode to get full text
+            });
+
+            if (!mentions || !Array.isArray(mentions) || mentions.length === 0) {
+                logger.debug('No new mentions found in this polling interval.');
+                return;
             }
 
-            const ruleResult = await twitterV2ReadOnlyClient.updateStreamRules({ add: rules })
-            logger.info('Stream rules updated', { rules: ruleResult.data })
+            logger.info(`Found ${mentions.length} new mention(s).`);
 
-            stream = await twitterV2ReadOnlyClient.searchStream({
-                expansions: ['author_id'],
-                'tweet.fields': ['created_at']
-            })
+            // Update sinceId with the ID of the newest mention (first in the array)
+            // Important: Use id_str for full precision
+            const newestId = mentions[0].id_str;
+            if (newestId) {
+                sinceId = newestId;
+                logger.debug(`Updated sinceId to ${sinceId}`);
+            }
 
-            stream.on(ETwitterStreamEvent.Data, async (data: any) => {
+            // Process tweets, oldest first, to maintain order
+            for (const tweet of mentions.reverse()) {
+                // Basic check to avoid processing tweets older than the initial sinceId (if any)
+                // More robust check might compare IDs numerically if needed
+
+                // Map v1.1 Tweet to the structure expected by handleMentionCallback
+                // NOTE: We create a partial UserV2-like object. HandleMention might need adjustment later if it relies heavily on UserV2 specifics.
+                const userDataForCallback: Partial<UserV2> & { id: string; username: string } = {
+                    id: tweet.user.id_str,
+                    username: tweet.user.screen_name,
+                    name: tweet.user.name
+                    // Add other UserV2 fields if necessary and available in v1.1 user object
+                };
+
+                const mentionData = {
+                    text: tweet.full_text || tweet.text, // Prefer full_text from extended mode
+                    user: userDataForCallback as UserV2, // Cast to UserV2, acknowledging it's partial
+                    timestamp: tweet.created_at,
+                    id: tweet.id_str
+                };
+
+                logger.debug(`Processing mention ID: ${mentionData.id}`);
                 try {
-                    const authorUser = data.includes?.users?.find((user: UserV2) => user.id === data.data.author_id)
-                    if (authorUser) {
-                        await handleMentionCallback({
-                            text: data.data.text,
-                            user: authorUser,
-                            timestamp: data.data.created_at ?? new Date().toISOString(),
-                            id: data.data.id
-                        })
-                    }
-                } catch (error) {
-                    logger.error('Error handling mention callback', { error })
+                    await handleMentionCallback(mentionData);
+                } catch (callbackError: any) {
+                    logger.error('Error executing handleMentionCallback', { tweetId: mentionData.id, error: callbackError });
                 }
-            })
+            }
 
-            stream.on(ETwitterStreamEvent.ConnectionError, (error: Error) => {
-                logger.error('Twitter stream connection error', { error })
-            })
+        } catch (error: any) {
+            // Handle potential API errors (like rate limits)
+            logger.error('Error during mention poll:', { code: error?.code, message: error?.message, data: error?.data });
+            // Consider specific handling for rate limit errors (e.g., backoff)
+        }
+    };
 
-            stream.on(ETwitterStreamEvent.ConnectionClosed, () => {
-                logger.warn('Twitter stream connection closed')
-            })
+    // Perform an initial poll immediately, then set the interval
+    performPoll(); 
+    pollingInterval = setInterval(performPoll, POLLING_INTERVAL_MS);
 
-            stream.on(ETwitterStreamEvent.ConnectionLost, () => {
-                logger.warn('Twitter stream connection lost')
-            })
+    logger.info('Mention polling started.');
 
-            stream.on(ETwitterStreamEvent.TweetParseError, (error: Error) => {
-                logger.error('Twitter stream tweet parse error', { error })
-            })
-
-            stream.on('ready', () => {
-                logger.info('Twitter stream connected and ready')
-            })
-        })
-
-        logger.info('Twitter listener started successfully')
-    } catch (error) {
-        logger.error('Failed to start Twitter listener', { error })
-    }
+    // Return void as the function now manages its own interval
+    return;
 }
 
 /**
@@ -256,19 +279,23 @@ export async function postImageTweet(
     }
 
     const imageMap: { [key: string]: string } = {
-        'default_meme': 'grlkrash_default.png',
-        'happy_meme': 'grlkrash_happy.png',
-        'perseverance_meme': 'grlkrash_perseverance.png'
+        'pfp1': 'pfp1.png',
+        'pfp2': 'pfp2.png',
+        'pfp3': 'pfp3.png',
+        'pfp4': 'pfp4.png',
+        'pfp5': 'pfp5.png',
+        'roblox': 'pfproblox.png',
+        'minecraft': 'pfpminecraft.png'
     }
 
-    const filename = imageMap[imageKey]
+    const filename = imageMap[imageKey] || 'pfp1.png'
     if (!filename) {
         logger.error('Invalid image key provided', { imageKey })
         return false
     }
 
     try {
-        const imagePath = path.join(__dirname, '../../..', 'public/images/memes', filename)
+        const imagePath = path.join(__dirname, '../../..', 'public/images/pfp', filename)
         const imageBuffer = await retryFn(async () => {
             logger.info('Attempting to read image file', { path: imagePath })
             return await fs.readFile(imagePath)
@@ -304,8 +331,14 @@ export async function shutdownTwitter(logger: Logger): Promise<void> {
             stream.close()
             logger.info('Twitter stream closed')
         }
+        
+        if (pollingInterval) {
+            clearInterval(pollingInterval);
+            pollingInterval = null;
+            logger.info('Twitter mention polling stopped')
+        }
     } catch (error) {
-        logger.error('Error closing Twitter stream', { error })
+        logger.error('Error during Twitter shutdown', { error })
     } finally {
         stream = null
         logger.info('Twitter service shutdown complete')
