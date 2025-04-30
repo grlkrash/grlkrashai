@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "es2020",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "strict": true,
+    "jsx": "react",
+    "allowJs": true,
+    "outDir": "dist",
+    "baseUrl": "./",
+    "paths": { "@/*": ["./src/*"] },
+    "skipLibCheck": true
+  },
+  "include": [
+    "src/mvp-agent.ts",
+    "src/config.ts",
+    "src/game/**/*.ts",
+    "src/services/twitter/**/*.ts",
+    "src/services/openai/**/*.ts",
+    "src/services/utils/**/*.ts", 
+    "src/utils/**/*.ts"          
+  ],
+  "exclude": ["node_modules"]
+}

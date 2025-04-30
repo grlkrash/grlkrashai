@@ -1,0 +1,54 @@
+{
+    "discord": {
+        "name": "GRLKRASHai",
+        "avatar": "assets/bot-avatar.png",
+        "description": "Official GRLKRASH music promotion and community bot",
+        "theme": {
+            "embedColor": "#FF0099",
+            "successColor": "#00FF99",
+            "errorColor": "#FF0000"
+        },
+        "status": {
+            "type": "LISTENING",
+            "name": "GRLKRASH"
+        },
+        "defaultResponses": {
+            "welcome": "Welcome to the KRASH WORLD community! ",
+            "help": "I'm here to help with music promotion, token management, and more!",
+            "error": "Oops! Something went wrong. Please try again or contact support."
+        }
+    },
+    "telegram": {
+        "name": "GRLKRASH_Bot",
+        "avatar": "assets/bot-avatar.png",
+        "description": "Official GRLKRASH music promotion and community bot",
+        "theme": {
+            "primaryColor": "#FF0099",
+            "secondaryColor": "#00FF99"
+        },
+        "defaultResponses": {
+            "welcome": "Welcome to KRASH WORLD's official bot!",
+            "help": "I can help you with music, tokens, and more!",
+            "error": "Something went wrong. Please try again or contact support."
+        }
+    },
+    "shared": {
+        "brandKit": {
+            "logo": "assets/grlkrash-logo.png",
+            "banner": "assets/grlkrash-banner.png",
+            "fonts": ["Orbitron", "Roboto"],
+            "colors": {
+                "primary": "#FF0099",
+                "secondary": "#00FF99",
+                "accent": "#9900FF",
+                "background": "#000000"
+            }
+        },
+        "mediaAssets": {
+            "defaultThumbnail": "assets/default-thumb.png",
+            "loadingAnimation": "assets/loading.gif",
+            "errorImage": "assets/error.png",
+            "successImage": "assets/success.png"
+        }
+    }
+} 

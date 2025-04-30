@@ -39,6 +39,7 @@ logs/
 # Testing
 coverage/
 test/__mocks__/@ledgerhq/
+test/__mocks__/@ledgerhq/hw-transport-webusb/
 
 # Temporary files
 tmp/
