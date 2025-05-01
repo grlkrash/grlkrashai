@@ -7,8 +7,16 @@ export interface GRLKRASHWorldState {
     timestamp: number
     keywordsFound: string[]
   }
+  lastLyricRequest?: {
+    userId: string;
+    channelId: string;
+    topic: string;
+    lastVerse: string;
+    timestamp: number;
+  };
   agentStatus: 'IDLE' | 'PROCESSING' | 'RESPONDING'
   lastActionTimestamp?: number
+  lastTwitterPostTimestamp?: number
   currentTime: Date
 }
 
@@ -16,5 +24,7 @@ export const initialWorldState: GRLKRASHWorldState = {
   agentStatus: 'IDLE',
   currentTime: new Date(),
   lastMentionReceived: undefined,
-  lastActionTimestamp: undefined
+  lastLyricRequest: undefined,
+  lastActionTimestamp: undefined,
+  lastTwitterPostTimestamp: undefined
 } 

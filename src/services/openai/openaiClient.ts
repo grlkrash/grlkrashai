@@ -16,9 +16,10 @@ if (!process.env.OPENAI_API_KEY) {
 
 logger.info('OpenAI client initialized successfully')
 
-export async function generateTextResponse(prompt: string): Promise<string> {
+export async function generateTextResponse(prompt: string, temperature: number = 0.7): Promise<string> {
   logger.info('Generating text response', { 
-    prompt: prompt.length > 50 ? `${prompt.substring(0, 50)}...` : prompt 
+    prompt: prompt.length > 50 ? `${prompt.substring(0, 50)}...` : prompt,
+    temperature
   })
 
   try {
@@ -27,7 +28,7 @@ export async function generateTextResponse(prompt: string): Promise<string> {
         model: 'gpt-3.5-turbo',
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 150,
-        temperature: 0.7
+        temperature
       })
 
       const resultText = completion.choices[0]?.message?.content

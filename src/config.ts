@@ -18,7 +18,8 @@ export const config = {
     accessToken: process.env.TWITTER_ACCESS_TOKEN!,
     accessSecret: process.env.TWITTER_ACCESS_SECRET!,
     bearerToken: process.env.TWITTER_BEARER_TOKEN!,
-    grlkrashaiUserId: process.env.TWITTER_GRLKRASHAI_USER_ID
+    grlkrashaiUserId: process.env.TWITTER_GRLKRASHAI_USER_ID,
+    botHandle: process.env.TWITTER_BOT_HANDLE!
   },
   discord: {
     botToken: process.env.DISCORD_BOT_TOKEN!
@@ -31,7 +32,8 @@ const requiredTwitterConfig = [
   { key: 'appSecret', value: config.twitter.appSecret },
   { key: 'accessToken', value: config.twitter.accessToken },
   { key: 'accessSecret', value: config.twitter.accessSecret },
-  { key: 'bearerToken', value: config.twitter.bearerToken }
+  { key: 'bearerToken', value: config.twitter.bearerToken },
+  { key: 'botHandle', value: config.twitter.botHandle }
 ]
 
 // Validate required Discord configuration

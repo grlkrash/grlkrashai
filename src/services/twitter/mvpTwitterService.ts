@@ -1,6 +1,7 @@
 import { ETwitterStreamEvent, EUploadMimeType, TweetV2, UserV2, TweetV2PostTweetResult } from 'twitter-api-v2'
 import { promises as fs } from 'fs'
 import path from 'path'
+import * as url from 'url'
 import config from '../../config.js'
 import { type Logger } from '../../utils/logger.js'
 import { retry } from '../../utils/retry.js'
@@ -163,18 +164,18 @@ export async function postTweet(options: PostTweetParams, logger: Logger, retryF
     }
 }
 
-export async function postTextTweet(text: string, logger: Logger, retryFn: Function): Promise<boolean> {
+export async function postTextTweet(text: string, logger: Logger, retryFn: Function): Promise<string | null> {
     try {
-        const result = await retryFn(async () => {
+        const result = await retryFn(3, async () => {
             logger.info('Attempting to post text tweet')
             return await twitterReadWriteClient.v2.tweet(text)
-        })
+        }, 1000)
 
         logger.info('Text tweet posted successfully', { tweetId: result.data.id })
-        return true
-    } catch (error) {
-        logger.error('Failed to post text tweet', { error })
-        return false
+        return result.data.id
+    } catch (error: any) {
+        logger.error('Failed to post text tweet', { message: error?.message, code: error?.code, apiErrors: error?.errors, data: error?.data, stack: error?.stack })
+        return null
     }
 }
 
@@ -272,7 +273,7 @@ export async function postImageTweet(
     imageKey: string | undefined,
     logger: Logger,
     retryFn: Function
-): Promise<boolean> {
+): Promise<string | null> {
     if (!imageKey) {
         logger.warn('No image key provided, falling back to text tweet')
         return await postTextTweet(text, logger, retryFn)
@@ -291,36 +292,46 @@ export async function postImageTweet(
     const filename = imageMap[imageKey] || 'pfp1.png'
     if (!filename) {
         logger.error('Invalid image key provided', { imageKey })
-        return false
+        return null
     }
 
     try {
+        const __dirname = path.dirname(url.fileURLToPath(import.meta.url))
         const imagePath = path.join(__dirname, '../../..', 'public/images/pfp', filename)
-        const imageBuffer = await retryFn(async () => {
+        const imageBuffer = await retryFn(3, async () => {
             logger.info('Attempting to read image file', { path: imagePath })
             return await fs.readFile(imagePath)
-        })
+        }, 1000)
 
         const mimeType = filename.endsWith('.png') ? EUploadMimeType.Png : EUploadMimeType.Jpeg
-        const mediaId = await retryFn(async () => {
+        const mediaId = await retryFn(3, async () => {
             logger.info('Attempting to upload media')
             return await twitterV1Client.uploadMedia(imageBuffer, { mimeType })
-        })
+        }, 1000)
 
-        const result = await retryFn(async () => {
+        const result = await retryFn(3, async () => {
             logger.info('Attempting to post image tweet')
             return await twitterReadWriteClient.v2.tweet(text, { 
                 media: { 
                     media_ids: [mediaId] as [string] 
                 } 
             })
-        })
+        }, 1000)
 
         logger.info('Image tweet posted successfully', { tweetId: result.data.id })
-        return true
-    } catch (error) {
-        logger.error('Failed to post image tweet', { error })
-        return false
+        return result.data.id
+    } catch (error: any) {
+        logger.error('Failed to post image tweet', { 
+            imageKey, 
+            filename, 
+            text, 
+            message: error?.message, 
+            code: error?.code, 
+            apiErrors: error?.errors, 
+            data: error?.data, 
+            stack: error?.stack 
+        })
+        return null
     }
 }
 
