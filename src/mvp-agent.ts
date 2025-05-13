@@ -4,6 +4,7 @@ import config from './config.js'
 import { retry } from './utils/retry.js'
 import { loadLyrics, getRandomLyricLines } from './utils/lyricLoader.js'
 import { GRLKRASHWorldState, initialWorldState } from './game/types.js'
+import grlkrashPersonalityConfig from './game/personality/grlkrash.js'
 import { 
   initializeDiscordClient, 
   shutdownDiscordClient, 
@@ -21,6 +22,31 @@ import { generateAndSave3DModel } from './services/fal/falService.js'
 import path from 'path'
 import fs from 'fs/promises'
 import * as url from 'url'
+
+// Shared constant for autonomous tweet style guidelines
+const AUTONOMOUS_STYLE_GUIDELINES = `STYLE GUIDELINES:
+
+MUST BE ALL CAPS
+
+MUST NOT use ANY punctuation
+
+MUST BE EXTREMELY CONCISE. ONE SENTENCE OR FRAGMENT ONLY. MAX ~100 CHARACTERS.
+
+BE PROVOCATIVE. Ask a challenging question or make a stark statement.
+
+AVOID abstract philosophical language. Be direct and punchy.
+
+DO NOT structure the output like song lyrics, poetry, or slogans. Aim for a concise, impactful statement or question.
+
+AVOID generic motivational phrases or simple affirmations (like 'BE UNSTOPPABLE'). Be more questioning or challenging.
+
+Focus on GRLKRASH themes: raw human truths (loneliness, perseverance, anger at control, desire for connection), observations about reality/society, the resistance, art as truth.
+
+Tone: Authentic, direct, raw, sometimes cryptic, questioning, or defiant. AVOID clichés and generic AI speak.
+
+The goal is to be thought-provoking and encourage engagement.
+
+NO hashtags. MAX one relevant emoji from list: 🔥, ✨, 💖, 💛, 🚀. Often NO emoji.`;
 
 // Create state instance to be used with GameWorker
 let currentState: GRLKRASHWorldState = { ...initialWorldState }
@@ -73,6 +99,21 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
   // 1. Analyze input data
   const { type, content, context } = input
   
+  // Define the current personality derived from imported configuration
+  const currentPersonality = {
+    traits: {
+      confident: grlkrashPersonalityConfig.coreTraits.find(t => t.trait === 'Confident')?.intensity || 0.7,
+      humble: grlkrashPersonalityConfig.coreTraits.find(t => t.trait === 'Humble')?.intensity || 0.5,
+      adventurous: grlkrashPersonalityConfig.coreTraits.find(t => t.trait === 'Adventurous')?.intensity || 0.7,
+      wise: grlkrashPersonalityConfig.coreTraits.find(t => t.trait === 'Playful')?.intensity || 0.7, // Map Playful to 'wise' for now for compatibility
+    },
+    voice: {
+      style: grlkrashPersonalityConfig.communicationStyle.emotionalTone.includes('playful') ? 'playful' : (grlkrashPersonalityConfig.communicationStyle.emotionalTone[0] || 'energetic'),
+      tone: grlkrashPersonalityConfig.communicationStyle.emotionalTone.includes('enthusiastic') ? 'enthusiastic' : (grlkrashPersonalityConfig.communicationStyle.emotionalTone[1] || 'direct'),
+      formality: grlkrashPersonalityConfig.communicationStyle.formality < 0.3 ? 'casual' : (grlkrashPersonalityConfig.communicationStyle.formality < 0.6 ? 'neutral' : 'formal'),
+    }
+  };
+  
   // Add improved logging for all input types
   const user = context.user as any // Cast user for logging access
   logger.info(`Processing ${type} from ${user?.username || 'System'}: "${content?.substring(0, 50)}${content?.length > 50 ? '...' : ''}"`)
@@ -87,51 +128,61 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
     currentState.currentTime = new Date()
     
     // Make decision based on autonomous tick
-    const personality = {
-      traits: {
-        confident: 0.8,
-        humble: 0.6,
-        adventurous: 0.9,
-        wise: 0.7
-      },
-      voice: {
-        style: 'playful',
-        tone: 'enthusiastic',
-        formality: 'casual'
-      }
-    }
-    
-    // Make decision directly without additional processing - pass the full input object
-    const decision = await makeDecision(content || '', currentState, personality, input)
+    const decision = await makeDecision(content || '', currentState, currentPersonality, input)
     logger.info(`Autonomous decision made: ${decision.action}`)
     
-    // Handle state update specific to autonomous post decision - UPDATE TIMESTAMP RIGHT AFTER DECISION
-    if (decision.action === 'POST_AUTONOMOUS_TWEET') {
-      currentState.lastTwitterPostTimestamp = Date.now() // Update timestamp HERE
-      logger.debug('Updated lastTwitterPostTimestamp in state.')
+    // Initialize prompt variable
+    let prompt = '';
+    
+    // Use switch statement to determine the correct prompt based on decision.action
+    switch (decision.action) {
+      case 'POST_AUTONOMOUS_QUESTION_TRUTH':
+        prompt = generateAutonomousQuestionTruthPrompt(currentState, currentPersonality);
+        logger.debug('Generated autonomous question truth prompt');
+        break;
+      case 'POST_AUTONOMOUS_OBSERVATION_REALITY':
+        prompt = generateAutonomousObservationRealityPrompt(currentState, currentPersonality);
+        logger.debug('Generated autonomous observation reality prompt');
+        break;
+      case 'POST_AUTONOMOUS_CALL_TO_ART':
+        prompt = generateAutonomousCallToArtPrompt(currentState, currentPersonality);
+        logger.debug('Generated autonomous call to art prompt');
+        break;
+      case 'POST_AUTONOMOUS_RESISTANCE_MESSAGE':
+        prompt = generateAutonomousResistanceMessagePrompt(currentState, currentPersonality);
+        logger.debug('Generated autonomous resistance message prompt');
+        break;
+      case 'IGNORE':
+        // No prompt needed for IGNORE action
+        logger.debug('No prompt generation needed for IGNORE action');
+        break;
+      default:
+        logger.warn(`Unknown autonomous action type: ${decision.action}`);
+        break;
     }
     
-    // 5. If generating content, prepare prompt and call OpenAI
-    if (decision.action === 'POST_AUTONOMOUS_TWEET') {
-      // Generate autonomous tweet content
-      const prompt = generateAutonomousTweetPrompt(currentState, personality)
-      logger.debug('Generated autonomous tweet prompt:', prompt)
+    // Check if prompt has been set (i.e., it's a posting action)
+    if (prompt) {
+      logger.info(`Calling OpenAI to generate autonomous thought for action: ${decision.action}`);
+      const temperature = 0.9; // Higher temperature for more varied autonomous thoughts
       
-      logger.info('Calling OpenAI to generate autonomous tweet')
-      const temperature = 0.9 // INCREASED temperature for more varied autonomous thoughts
-      
-      // Only call OpenAI if a valid prompt was generated
-      if (prompt) { // REMOVED check for decision.content !== undefined
-        const generatedTweet = await generateTextResponse(prompt, temperature)
-        logger.info(`Received generated tweet (${generatedTweet.length} chars)`)
-        logger.debug('Generated tweet:', generatedTweet)
+      try {
+        const generatedContent = await generateTextResponse(prompt, temperature);
+        logger.info(`Received generated autonomous content (${generatedContent.length} chars)`);
+        logger.debug('Generated content:', generatedContent);
         
-        decision.content = generatedTweet
-      } else {
-        // Handle case where prompt generation failed
-        logger.error('OpenAI call needed but prompt generation failed for action:', decision.action)
-        decision.content = undefined // Ensure content is undefined so action handler knows it failed
+        decision.content = generatedContent;
+        
+        // Update state with action type and timestamp
+        currentState.lastAutonomousActionType = decision.action;
+        currentState.lastTwitterPostTimestamp = Date.now();
+      } catch (error) {
+        logger.error('Failed to generate content for autonomous action:', error);
+        decision.content = undefined; // Ensure content is undefined so action handler knows it failed
       }
+    } else {
+      // No prompt was generated (for IGNORE or unknown actions)
+      decision.content = undefined;
     }
     
     // Reset agent status to IDLE after processing
@@ -143,24 +194,7 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
   // For Discord mentions, continue with normal processing
   const { user: discordUser, timestamp, messageId } = context
   
-  // 2. Define personality configuration
-  const personality = {
-    traits: {
-      confident: 0.8,
-      humble: 0.6,
-      adventurous: 0.9,
-      wise: 0.7
-    },
-    voice: {
-      style: 'playful',
-      tone: 'enthusiastic',
-      formality: 'casual'
-    }
-  }
-  
-  logger.debug('Using personality configuration:', personality)
-  
-  // 3. Update world state
+  // 2. Update world state
   const previousState = { ...currentState }
   currentState.lastMentionReceived = {
     userId: discordUser.id,
@@ -184,13 +218,14 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
   
   // 4. Make decision based on content analysis
   logger.info(`Making decision based on keywords: ${currentState.lastMentionReceived.keywordsFound.join(', ') || 'none found'}`)
-  const decision = await makeDecision(content || '', currentState, personality, input)
+  const decision = await makeDecision(content || '', currentState, currentPersonality, input)
   logger.info(`Decision made: ${decision.action}`)
   
   // Handle state update specific to autonomous post decision - MOVED HERE right after decision is made
-  if (decision.action === 'POST_AUTONOMOUS_TWEET') {
+  if (decision.action.startsWith('POST_AUTONOMOUS_')) {
     currentState.lastTwitterPostTimestamp = Date.now()
-    logger.debug('Updated lastTwitterPostTimestamp in state.')
+    currentState.lastAutonomousActionType = decision.action // Store the action type
+    logger.debug('Updated lastTwitterPostTimestamp and lastAutonomousActionType in state.')
   }
   
   // 5. If generating content, prepare prompt and call OpenAI
@@ -200,7 +235,7 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
   let requiresOpenAI = false; // Flag to track if OpenAI is needed
 
   if (decision.action === 'GENERATE_LYRICS') {
-    prompt = generateLyricsPrompt(currentTopic, currentState, personality);
+    prompt = generateLyricsPrompt(currentTopic, currentState, currentPersonality);
     temperature = 0.6;
     logger.info('Calling OpenAI to generate initial lyrics');
     requiresOpenAI = true;
@@ -209,31 +244,31 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
     currentTopic = decision.content || currentState.lastLyricRequest?.topic || 'the struggle'; // Get topic
     const prevVerse = decision.context?.previousVerse || '';
     if (!prevVerse) logger.warn("Generating 'more' lyrics but no previous verse found in decision context");
-    prompt = generateMoreLyricsPrompt(currentTopic, prevVerse, currentState, personality); // Note parameter order
+    prompt = generateMoreLyricsPrompt(currentTopic, prevVerse, currentState, currentPersonality); // Note parameter order
     temperature = 0.65; // Slightly higher temperature for continuation creativity
     logger.info('Calling OpenAI to generate MORE lyrics');
     requiresOpenAI = true;
   } else if (decision.action === 'POST_AUTONOMOUS_TWEET') {
-    prompt = generateAutonomousTweetPrompt(currentState, personality);
+    prompt = generateAutonomousTweetPrompt(currentState, currentPersonality);
     temperature = 0.9; // INCREASED temperature for more varied autonomous thoughts
     logger.info('Calling OpenAI to generate autonomous thought');
     requiresOpenAI = true;
   } else if (decision.action === 'POST_TEXT') {
     // Handle POST_TEXT if still needed
-    prompt = generatePrompt(currentTopic, currentState, personality);
+    prompt = generatePrompt(currentTopic, currentState, currentPersonality);
     logger.info('Calling OpenAI to generate response text');
     requiresOpenAI = true;
   } else if (decision.action === 'GENERATE_PROMO_COPY') {
     // Extract link and description from decision context
     const link = decision.context?.link;
     const description = decision.context?.description || 'Check this out!';
-    prompt = generatePromoCopyPrompt(link, description, currentState, personality);
+    prompt = generatePromoCopyPrompt(link, description, currentState, currentPersonality);
     temperature = 0.8; // Slightly higher temperature for creative promo copy
     logger.info('Calling OpenAI to generate promotional copy');
     requiresOpenAI = true;
   } else if (decision.action === 'ANSWER_QUERY') {
     // Handle ANSWER_QUERY - use the lore-based chat response prompt
-    prompt = generateChatResponsePrompt(currentTopic, currentState, personality);
+    prompt = generateChatResponsePrompt(currentTopic, currentState, currentPersonality);
     temperature = 0.75; // Balanced temperature for in-character responses
     logger.info('Calling OpenAI to generate lore-based chat response');
     requiresOpenAI = true;
@@ -303,15 +338,41 @@ async function makeDecision(
 
   // --- Autonomous Action Check ---
   if (input.type === 'autonomous_tick') {
+      const autonomousActionTypes = [
+        'POST_AUTONOMOUS_QUESTION_TRUTH', 
+        'POST_AUTONOMOUS_OBSERVATION_REALITY', 
+        'POST_AUTONOMOUS_CALL_TO_ART', 
+        'POST_AUTONOMOUS_RESISTANCE_MESSAGE'
+      ];
+
       const MIN_TIME_BETWEEN_POSTS_MS = 6 * 60 * 60 * 1000; // e.g., 6 hours
       const now = Date.now();
       const lastPostTime = state.lastTwitterPostTimestamp ?? 0; 
 
       if (now - lastPostTime > MIN_TIME_BETWEEN_POSTS_MS) {
           logger.debug('Autonomous trigger: Time threshold met. Deciding to generate a thought.');
-          // Return the action type, content will be generated later
+          
+          // Get the last action type
+          const lastActionType = state.lastAutonomousActionType;
+          
+          // Select the next action in round-robin fashion
+          let chosenAutonomousAction: string;
+          
+          if (!lastActionType || !autonomousActionTypes.includes(lastActionType)) {
+              // If no previous action or not in our array, select the first one
+              chosenAutonomousAction = autonomousActionTypes[0];
+              logger.debug(`No previous autonomous action type or invalid type. Selected first action: ${chosenAutonomousAction}`);
+          } else {
+              // Find the index of the last action and get the next one
+              const lastIndex = autonomousActionTypes.indexOf(lastActionType);
+              const nextIndex = (lastIndex + 1) % autonomousActionTypes.length; // Cycle back to beginning if needed
+              chosenAutonomousAction = autonomousActionTypes[nextIndex];
+              logger.debug(`Previous autonomous action type: ${lastActionType}. Selected next action: ${chosenAutonomousAction}`);
+          }
+          
+          // Return the chosen action type
           return { 
-              action: 'POST_AUTONOMOUS_TWEET' 
+              action: chosenAutonomousAction 
           };
       } else {
           logger.debug('Autonomous trigger: Not enough time passed since last post. Ignoring.');
@@ -711,6 +772,55 @@ Generate ONLY the 4 NEW lines of raw verse text below:`;
 function generateAutonomousTweetPrompt(state: GRLKRASHWorldState, personality: any): string {
     logger.info('Generating AUTONOMOUS TWEET prompt for OpenAI');
 
+    // Get the current action type (or default to the first one if not available)
+    const actionType = state.lastAutonomousActionType || 'POST_AUTONOMOUS_QUESTION_TRUTH';
+    logger.debug(`Creating prompt for action type: ${actionType}`);
+
+    // Call the appropriate specialized prompt generator based on action type
+    switch (actionType) {
+        case 'POST_AUTONOMOUS_QUESTION_TRUTH':
+            return generateAutonomousQuestionTruthPrompt(state, personality);
+        case 'POST_AUTONOMOUS_OBSERVATION_REALITY':
+            return generateAutonomousObservationRealityPrompt(state, personality);
+        case 'POST_AUTONOMOUS_CALL_TO_ART':
+            return generateAutonomousCallToArtPrompt(state, personality);
+        case 'POST_AUTONOMOUS_RESISTANCE_MESSAGE':
+            return generateAutonomousResistanceMessagePrompt(state, personality);
+        default:
+            // Fallback to a generic prompt if action type is unknown
+            logger.warn(`Unknown autonomous action type: ${actionType}, using generic prompt.`);
+            
+            // Ensure personality and its properties exist with defaults if necessary
+            const traits = personality?.traits ?? { confident: 0.7, humble: 0.5, adventurous: 0.7, wise: 0.6 };
+            const voice = personality?.voice ?? { style: 'playful', tone: 'enthusiastic', formality: 'casual' };
+
+            // Construct personality traits string
+            const personalityTraits = [ 
+                traits.confident > 0.7 ? 'confident' : 'humble',
+                traits.adventurous > 0.7 ? 'adventurous' : 'cautious',
+                traits.wise > 0.7 ? 'wise' : 'playful',
+                'creative', 'tech-savvy', 'slightly rebellious'
+            ].join(', ');
+
+            // Fallback task
+            const task = `Generate ONE extremely short, direct, and provocative question OR a cryptic statement (MAXIMUM 1 short sentence or fragment, aim for under 100 characters) from GRLKRASH's perspective on truth, control, reality, or the resistance.`;
+
+            return `You are GRLKRASH, embodying a raw, ALL CAPS, no-punctuation style reflecting on human truths and resistance.
+
+${task}
+
+${AUTONOMOUS_STYLE_GUIDELINES}
+
+Generate ONLY the thought text below:`;
+    }
+}
+
+/**
+ * Generates a prompt for OpenAI to create an autonomous question about truth from GRLKRASH.
+ */
+function generateAutonomousQuestionTruthPrompt(state: GRLKRASHWorldState, personality: any): string {
+    logger.info('Generating AUTONOMOUS QUESTION TRUTH prompt for OpenAI');
+
     // Ensure personality and its properties exist with defaults if necessary
     const traits = personality?.traits ?? { confident: 0.7, humble: 0.5, adventurous: 0.7, wise: 0.6 };
     const voice = personality?.voice ?? { style: 'playful', tone: 'enthusiastic', formality: 'casual' };
@@ -720,42 +830,107 @@ function generateAutonomousTweetPrompt(state: GRLKRASHWorldState, personality: a
         traits.confident > 0.7 ? 'confident' : 'humble',
         traits.adventurous > 0.7 ? 'adventurous' : 'cautious',
         traits.wise > 0.7 ? 'wise' : 'playful',
-        'creative', 'tech-savvy', 'slightly rebellious' // Keep consistent with lyric prompt maybe?
+        'creative', 'tech-savvy', 'slightly rebellious'
     ].join(', ');
 
-    // Define style guidelines
-    const styleGuideline = `STYLE GUIDELINES:
+    // Define the specific task
+    const task = `Generate ONE extremely short, direct, and provocative GRLKRASH-style question about the nature of TRUTH, perception, or authenticity. Aim for under 100 characters.`;
 
-MUST BE ALL CAPS
-
-MUST NOT use ANY punctuation
-
-MUST BE EXTREMELY CONCISE. ONE SENTENCE OR FRAGMENT ONLY. MAX ~100 CHARACTERS.
-
-BE PROVOCATIVE. Ask a challenging question or make a stark statement.
-
-AVOID abstract philosophical language. Be direct and punchy.
-
-DO NOT structure the output like song lyrics, poetry, or slogans. Aim for a concise, impactful statement or question.
-
-AVOID generic motivational phrases or simple affirmations (like 'BE UNSTOPPABLE'). Be more questioning or challenging.
-
-Focus on GRLKRASH themes: raw human truths (loneliness, perseverance, anger at control, desire for connection), observations about reality/society, the resistance, art as truth.
-
-Tone: Authentic, direct, raw, sometimes cryptic, questioning, or defiant. AVOID clichés and generic AI speak.
-
-The goal is to be thought-provoking and encourage engagement.
-
-NO hashtags. MAX one relevant emoji from list: 🔥, ✨, 💖, 💛, 🚀. Often NO emoji.`;
-
-// Task for the LLM
-  const task = `Generate ONE extremely short, direct, and provocative question OR a cryptic statement (MAXIMUM 1 short sentence or fragment, aim for under 100 characters) from GRLKRASH's perspective on truth, control, reality, or the resistance. Make it something people will react to or question.`;
-
-  return `You are GRLKRASH, embodying a raw, ALL CAPS, no-punctuation style reflecting on human truths and resistance.
+    return `You are GRLKRASH, embodying a raw, ALL CAPS, no-punctuation style reflecting on human truths and resistance.
 
 ${task}
 
-${styleGuideline}
+${AUTONOMOUS_STYLE_GUIDELINES}
+
+Generate ONLY the thought text below:`;
+}
+
+/**
+ * Generates a prompt for OpenAI to create an autonomous observation about reality from GRLKRASH.
+ */
+function generateAutonomousObservationRealityPrompt(state: GRLKRASHWorldState, personality: any): string {
+    logger.info('Generating AUTONOMOUS OBSERVATION REALITY prompt for OpenAI');
+
+    // Ensure personality and its properties exist with defaults if necessary
+    const traits = personality?.traits ?? { confident: 0.7, humble: 0.5, adventurous: 0.7, wise: 0.6 };
+    const voice = personality?.voice ?? { style: 'playful', tone: 'enthusiastic', formality: 'casual' };
+
+    // Construct personality traits string
+    const personalityTraits = [ 
+        traits.confident > 0.7 ? 'confident' : 'humble',
+        traits.adventurous > 0.7 ? 'adventurous' : 'cautious',
+        traits.wise > 0.7 ? 'wise' : 'playful',
+        'creative', 'tech-savvy', 'slightly rebellious'
+    ].join(', ');
+
+    // Define the specific task
+    const task = `Generate ONE concise, cryptic GRLKRASH-style observation (a statement, not a question) about REALITY, digital existence, or the simulation. Aim for under 100 characters.`;
+
+    return `You are GRLKRASH, embodying a raw, ALL CAPS, no-punctuation style reflecting on human truths and resistance.
+
+${task}
+
+${AUTONOMOUS_STYLE_GUIDELINES}
+
+Generate ONLY the thought text below:`;
+}
+
+/**
+ * Generates a prompt for OpenAI to create an autonomous call to art from GRLKRASH.
+ */
+function generateAutonomousCallToArtPrompt(state: GRLKRASHWorldState, personality: any): string {
+    logger.info('Generating AUTONOMOUS CALL TO ART prompt for OpenAI');
+
+    // Ensure personality and its properties exist with defaults if necessary
+    const traits = personality?.traits ?? { confident: 0.7, humble: 0.5, adventurous: 0.7, wise: 0.6 };
+    const voice = personality?.voice ?? { style: 'playful', tone: 'enthusiastic', formality: 'casual' };
+
+    // Construct personality traits string
+    const personalityTraits = [ 
+        traits.confident > 0.7 ? 'confident' : 'humble',
+        traits.adventurous > 0.7 ? 'adventurous' : 'cautious',
+        traits.wise > 0.7 ? 'wise' : 'playful',
+        'creative', 'tech-savvy', 'slightly rebellious'
+    ].join(', ');
+
+    // Define the specific task
+    const task = `Generate ONE brief, energetic GRLKRASH-style call to action encouraging ART, creativity, or free expression as a form of resistance. Aim for under 100 characters.`;
+
+    return `You are GRLKRASH, embodying a raw, ALL CAPS, no-punctuation style reflecting on human truths and resistance.
+
+${task}
+
+${AUTONOMOUS_STYLE_GUIDELINES}
+
+Generate ONLY the thought text below:`;
+}
+
+/**
+ * Generates a prompt for OpenAI to create an autonomous resistance message from GRLKRASH.
+ */
+function generateAutonomousResistanceMessagePrompt(state: GRLKRASHWorldState, personality: any): string {
+    logger.info('Generating AUTONOMOUS RESISTANCE MESSAGE prompt for OpenAI');
+
+    // Ensure personality and its properties exist with defaults if necessary
+    const traits = personality?.traits ?? { confident: 0.7, humble: 0.5, adventurous: 0.7, wise: 0.6 };
+    const voice = personality?.voice ?? { style: 'playful', tone: 'enthusiastic', formality: 'casual' };
+
+    // Construct personality traits string
+    const personalityTraits = [ 
+        traits.confident > 0.7 ? 'confident' : 'humble',
+        traits.adventurous > 0.7 ? 'adventurous' : 'cautious',
+        traits.wise > 0.7 ? 'wise' : 'playful',
+        'creative', 'tech-savvy', 'slightly rebellious'
+    ].join(', ');
+
+    // Define the specific task
+    const task = `Generate ONE punchy, GRLKRASH-style statement or very short question about THE RESISTANCE, fighting control, or breaking free. Aim for under 100 characters.`;
+
+    return `You are GRLKRASH, embodying a raw, ALL CAPS, no-punctuation style reflecting on human truths and resistance.
+
+${task}
+
+${AUTONOMOUS_STYLE_GUIDELINES}
 
 Generate ONLY the thought text below:`;
 }
@@ -878,6 +1053,14 @@ async function triggerAutonomousAction() {
   try {
     logger.info('Triggering autonomous action check...');
     
+    // Define the list of autonomous posting actions
+    const autonomousPostingActions = [
+      'POST_AUTONOMOUS_QUESTION_TRUTH', 
+      'POST_AUTONOMOUS_OBSERVATION_REALITY', 
+      'POST_AUTONOMOUS_CALL_TO_ART', 
+      'POST_AUTONOMOUS_RESISTANCE_MESSAGE'
+    ];
+    
     // Create properly structured inputArgs object for autonomous action
     const inputArgs: ProcessInputArgs = {
       type: 'autonomous_tick',
@@ -899,8 +1082,8 @@ async function triggerAutonomousAction() {
     logger.info(`Autonomous decision: ${decision.action}`);
     
     // Handle the decision
-    if (decision.action === 'POST_AUTONOMOUS_TWEET' && decision.content) {
-        logger.info(`Autonomous action: Attempting to post tweet: "${decision.content}"`);
+    if (autonomousPostingActions.includes(decision.action) && decision.content) {
+        logger.info(`Autonomous post for action '${decision.action}': "${decision.content.substring(0, 50)}${decision.content.length > 50 ? '...' : ''}"`);
         let tweetPosted = false;
         let castPosted = false;
         let farcasterCastHash: string | null = null;
@@ -945,8 +1128,8 @@ async function triggerAutonomousAction() {
     } else if (decision.action === 'IGNORE') {
         logger.info('Autonomous action decided: IGNORE / NO ACTION');
     } else {
-        // This case handles if POST_AUTONOMOUS_THOUGHT was decided but content is missing (OpenAI failed)
-        logger.warn('Autonomous action POST_AUTONOMOUS_THOUGHT failed because content was missing.', { decision });
+        // This case handles if an autonomous action was decided but content is missing (OpenAI failed)
+        logger.warn(`Autonomous action '${decision.action}' decided but content was missing.`, { decision });
     }
   } catch (error) {
     logger.error('Error in autonomous action:', error);

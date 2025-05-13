@@ -17,6 +17,7 @@ export interface GRLKRASHWorldState {
   agentStatus: 'IDLE' | 'PROCESSING' | 'RESPONDING'
   lastActionTimestamp?: number
   lastTwitterPostTimestamp?: number
+  lastAutonomousActionType?: string | null
   currentTime: Date
 }
 
@@ -26,5 +27,6 @@ export const initialWorldState: GRLKRASHWorldState = {
   lastMentionReceived: undefined,
   lastLyricRequest: undefined,
   lastActionTimestamp: undefined,
-  lastTwitterPostTimestamp: undefined
+  lastTwitterPostTimestamp: undefined,
+  lastAutonomousActionType: null
 } 
