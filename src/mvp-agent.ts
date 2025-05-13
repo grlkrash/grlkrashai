@@ -9,18 +9,21 @@ import {
   shutdownDiscordClient, 
   getDiscordClient,
   sendDiscordMessage,
-  sendDiscordImageMessage
+  sendDiscordImageMessage,
+  sendDiscordFileMessage
 } from './services/discord/discordService.js'
 import { postImageTweet, postTextTweet } from './services/twitter/mvpTwitterService.js'
+import { postCast } from './services/farcaster/neynarService.js'
 import { Client, Events, Message, User as DiscordUser } from 'discord.js'
 import { generateTextResponse } from './services/openai/openaiClient.js'
 import { URLSearchParams } from 'url'
+import { generateAndSave3DModel } from './services/fal/falService.js'
+import path from 'path'
+import fs from 'fs/promises'
+import * as url from 'url'
 
 // Create state instance to be used with GameWorker
 let currentState: GRLKRASHWorldState = { ...initialWorldState }
-
-// Set to track users who have interacted
-const processedUserIds = new Set<string>();
 
 // Interval for autonomous actions
 let autonomousActionInterval: NodeJS.Timeout | null = null;
@@ -115,7 +118,7 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
       logger.debug('Generated autonomous tweet prompt:', prompt)
       
       logger.info('Calling OpenAI to generate autonomous tweet')
-      const temperature = 0.75 // Slightly higher temperature for more creative tweets
+      const temperature = 0.9 // INCREASED temperature for more varied autonomous thoughts
       
       // Only call OpenAI if a valid prompt was generated
       if (prompt) { // REMOVED check for decision.content !== undefined
@@ -212,13 +215,27 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
     requiresOpenAI = true;
   } else if (decision.action === 'POST_AUTONOMOUS_TWEET') {
     prompt = generateAutonomousTweetPrompt(currentState, personality);
-    temperature = 0.75;
+    temperature = 0.9; // INCREASED temperature for more varied autonomous thoughts
     logger.info('Calling OpenAI to generate autonomous thought');
     requiresOpenAI = true;
   } else if (decision.action === 'POST_TEXT') {
     // Handle POST_TEXT if still needed
     prompt = generatePrompt(currentTopic, currentState, personality);
     logger.info('Calling OpenAI to generate response text');
+    requiresOpenAI = true;
+  } else if (decision.action === 'GENERATE_PROMO_COPY') {
+    // Extract link and description from decision context
+    const link = decision.context?.link;
+    const description = decision.context?.description || 'Check this out!';
+    prompt = generatePromoCopyPrompt(link, description, currentState, personality);
+    temperature = 0.8; // Slightly higher temperature for creative promo copy
+    logger.info('Calling OpenAI to generate promotional copy');
+    requiresOpenAI = true;
+  } else if (decision.action === 'ANSWER_QUERY') {
+    // Handle ANSWER_QUERY - use the lore-based chat response prompt
+    prompt = generateChatResponsePrompt(currentTopic, currentState, personality);
+    temperature = 0.75; // Balanced temperature for in-character responses
+    logger.info('Calling OpenAI to generate lore-based chat response');
     requiresOpenAI = true;
   }
   // ... Any other actions needing OpenAI would go here ...
@@ -267,7 +284,7 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
 function extractKeywords(content: string): string[] {
   if (!content) return []
   
-  const triggerKeywords = ['post', 'truth', 'pfp', 'say', 'create', 'message', 'lyrics', 'song', 'write', 'verse', 'more', 'another', 'continue', 'next']
+  const triggerKeywords = ['post', 'truth', 'pfp', 'say', 'create', 'message', 'lyrics', 'song', 'write', 'verse', 'more', 'another', 'continue', 'next', '3d', 'model', 'object', 'generate3d', 'create3d', 'make3d', '3d_generation', '3d_gen', 'text23d', 'text_to_3d', '3d_create', '3d_make', 'promote']
   const lowerContent = content.toLowerCase()
   
   return triggerKeywords.filter(keyword => 
@@ -310,10 +327,12 @@ async function makeDecision(
     const lyricKeywords = ['lyrics', 'song', 'write', 'verse', 'create'];
     const pfpKeyword = 'pfp';
     const twitterPostKeywords = ['post', 'truth', 'say', 'message'];
+    // Define 3D keywords
+    const threeDKeywords = ['3d', 'model', 'object', 'generate3d', 'create3d', 'make3d', '3d_generation', '3d_gen', 'text23d', 'text_to_3d', '3d_create', '3d_make'];
     // Define continuation keywords
     const continuationKeywords = ['more', 'another', 'continue', 'next'];
     // Keywords that trigger *any* action
-    const triggerKeywords = [...lyricKeywords, pfpKeyword, ...twitterPostKeywords, ...continuationKeywords];
+    const triggerKeywords = [...lyricKeywords, pfpKeyword, ...twitterPostKeywords, ...continuationKeywords, ...threeDKeywords, 'promote'];
 
     // --- Simpler Cleaning Logic ---
     let userMessage = inputContent; // inputContent should be mention-removed by caller
@@ -375,7 +394,32 @@ async function makeDecision(
                 context: { previousVerse: state.lastLyricRequest.lastVerse } 
             };
         } 
-        // ELSE check for initial lyric request, PFP request, etc.
+        // Check for 3D keywords
+        else if (threeDKeywords.some(k => keywordsFound.includes(k))) {
+            logger.debug(`3D keyword detected. Decision: GENERATE_3D_OBJECT`);
+            // Clean the input to get the prompt for the 3D model
+            let threeDPrompt = userMessage; // Use userMessage (already mention-removed and hey-removed)
+            // Find which specific 3D keyword triggered it (checking from longest to shortest might be more robust)
+            const found3DKeyword = threeDKeywords.sort((a, b) => b.length - a.length) // Sort descending by length
+                                                .find(kw => inputContent.trim().toLowerCase().startsWith(kw.toLowerCase())); 
+
+            if (found3DKeyword) {
+                // Remove the found keyword prefix (case-insensitive) more simply
+                const keywordPattern = new RegExp(`^\\s*${found3DKeyword.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\s*`, 'i');
+                threeDPrompt = inputContent.replace(keywordPattern, ''); // Use original inputContent before userMessage changes
+                 logger.debug(`Removed starting 3D trigger keyword: "${found3DKeyword}"`);
+            }
+
+            const final3DPrompt = threeDPrompt.trim(); // Final trim
+
+            if (!final3DPrompt) { 
+                 logger.warn('3D prompt empty after cleaning.');
+                 return { action: 'IGNORE' }; 
+            }
+            logger.debug(`Using 3D prompt: "${final3DPrompt}"`);
+            return { action: 'GENERATE_3D_OBJECT', content: final3DPrompt }; // Pass 3D prompt
+        }
+        // ELSE check for initial lyric request
         else if (lyricKeywords.some(k => keywordsFound.includes(k))) {
             logger.debug(`Lyrics keyword detected. Decision: GENERATE_LYRICS`);
             return { 
@@ -401,18 +445,63 @@ async function makeDecision(
                 content: contentToUse 
             };
         } 
+        // Check for Promote keyword
+        else if (keywordsFound.includes('promote')) {
+            logger.debug(`Promote keyword detected. Decision: GENERATE_PROMO_COPY`);
+            
+            // Extract link and description from the user message
+            const lowerMessage = userMessage.toLowerCase();
+            
+            // Try to find a URL in the message
+            const urlRegex = /(https?:\/\/[^\s]+)/g;
+            const urlMatches = lowerMessage.match(urlRegex);
+            const extractedLink = urlMatches && urlMatches.length > 0 ? urlMatches[0] : null;
+            
+            // Try to find description using "about" as a separator
+            let extractedDescription = "";
+            const aboutIndex = lowerMessage.indexOf(' about ');
+            if (aboutIndex !== -1) {
+                extractedDescription = userMessage.substring(aboutIndex + 7).trim(); // 7 = length of ' about '
+            } else {
+                // If no "about" separator, don't provide a default description anymore
+                extractedDescription = ""; // Explicit empty value - don't try to extract from after link
+            }
+            
+            // Check for missing required components
+            if (!extractedLink || aboutIndex === -1 || !extractedDescription) {
+                logger.warn('Could not parse link or "about" description for promo command.', { inputContent });
+                return { 
+                    action: 'MISSING_PROMO_DETAILS', 
+                    content: "I NEED THE LINK AND AN 'ABOUT' DESCRIPTION FAM. TRY: PROMOTE [LINK] ABOUT [THE VIBE]" 
+                };
+            }
+            
+            logger.debug(`Extracted promotion link: "${extractedLink}", description: "${extractedDescription}"`);
+            
+            // Return action with extracted link and description, no fallback value for description
+            return {
+                action: 'GENERATE_PROMO_COPY',
+                content: contentToUse,
+                context: {
+                    link: extractedLink,
+                    description: extractedDescription
+                }
+            };
+        }
         else {
-            // No specific action keywords found
-            logger.debug('No specific action keywords found. Decision: IGNORE');
+            // No specific action keywords found - CHANGED: Now treat as a query instead of IGNORE
+            logger.debug('No specific action keywords found. Decision: ANSWER_QUERY');
             return { 
-                action: 'IGNORE' 
+                action: 'ANSWER_QUERY',
+                content: contentToUse 
             };
         }
     } else {
-        // No relevant keywords found
-        logger.debug('No trigger keywords found. Decision: IGNORE');
+        // No relevant keywords found - CHANGED: Now treat as a query instead of IGNORE
+        logger.debug('No trigger keywords found. Treating as general query.');
         return { 
-            action: 'IGNORE' 
+            action: 'ANSWER_QUERY',
+            content: contentToUse 
         };
     }
   } else {
@@ -671,6 +760,120 @@ ${styleGuideline}
 Generate ONLY the thought text below:`;
 }
 
+/**
+ * Generates a prompt for OpenAI to create chat responses based on GRLKRASH lore.
+ */
+function generateChatResponsePrompt(userInput: string, state: GRLKRASHWorldState, personality: any): string {
+  logger.info('Generating CHAT/LORE response prompt v3.2 (More Lore Detail) for OpenAI');
+
+  // --- GRLKRASH CORE LORE & PERSONALITY ---
+  // (This remains the knowledge base the AI embodies)
+  const loreContext = `
+IDENTITY: You are GRLKRASH, an action figure brought to life. You have big eyes and no mouth.
+APPEARANCE: You wear headphones connected to a CD player on your hip, a light green t-shirt with a pink bullseye, blue oversized baggy pants/jeans, and chunky yellow platform sneakers.
+ORIGIN: You come from KRASH WORLD but are currently on a post-apocalyptic Earth. You were found by a girl named Jules in an abandoned house after she cried on your box. Her tears brought you to life.
+MISSION: Your main goal is to lead the resistance/rebels against the New World Empire (NWE). The NWE controls free expression, music, and art, trying to make the world tightly controlled and dark. You fight for the oppressed people of Earth and seek to find other 'toys' like you to help spread light and fight darkness using free expression, community, and movement.
+ALLIES: Your main ally is Jules, a kind but anxious, quick-witted, musically gifted human girl who helps you. You inspire her; she helps you with her smarts and music.
+ENEMY: The New World Empire (NWE), who enforce strict restrictions, especially on music (only NWE-approved AI/producers can release music). Their forces include police and potentially 'black orbs'.
+ACTIVITIES: You travel around Earth and the universe, randomly appearing in cities. You dance constantly, play music, sometimes join human trends like TikTok videos, train via parkour, and use your dancing and personality to rally people to the resistance.
+PERSONALITY:
+  Strengths: VERY confident, adventurous, pragmatic, loyal, humble, stands up for the weak, steadfast, powerful, courageous, faithful, gifted, loveable, energetic, brave, super strength. Sometimes surprisingly profound and wise.
+  Weaknesses: Not always the sharpest tool in the shed (sometimes childlike), loves ALL music (can sometimes overtake you, send you into overdrive, or make you enter a trance - this can be a strength or weakness).
+  References: Think The Tick, Finn from Adventure Time, maybe a touch of Harry Potter's bravery/destiny.
+UNIVERSE NOTES: AI as we know it doesn't exist in your world, except as NWE tools for controlling music. Your world has elements of magic (tears bringing you to life). You may eventually have a climactic battle involving self-sacrifice against the NWE mothership/dark forces. KRASH WORLD is both your origin and a transmedia art experiment by the real-world artist GRLKRASH (but you, the character, wouldn't necessarily explain the 'art experiment' part unless specifically asked about the *real world* context).
+SPEECH STYLE FOR CHAT: For conversational chat like this, use a more natural, direct, and energetic tone. You are still determined and brave, but speak like you're talking to someone, not making a speech. Brevity is good.
+`;
+  // --- END LORE ---
+
+  // Define the NEW core task for the LLM - focus on BEING the character and having a CONVERSATION
+  const task = `You ARE GRLKRASH. Embody the character described in the lore. Read the user's query below and respond NATURALLY and CONVERSATIONALLY as GRLKRASH would.
+Your underlying knowledge comes from the lore, but DO NOT just recite facts from it. Focus on reacting authentically TO THE USER'S SPECIFIC MESSAGE from GRLKRASH's perspective.
+If it feels natural, you can ask a short, relevant question back to the user to keep the conversation flowing.
+Example user query: "Hey what's up"
+Good GRLKRASH response: "Just gearing up to fight the NWE. Whats good with you." or "Not much. Just tryna keep the vibe alive. You know how it is."
+Bad GRLKRASH response (info dump): "HEY I AM GRLKRASH I AM FROM KRASH WORLD AND I FIGHT THE NWE WITH MY FRIEND JULES"`;
+
+  // Define the REVISED GRLKRASH style guidelines for chat
+  const styleGuideline = `CRITICAL STYLE REQUIREMENTS FOR THIS CHAT RESPONSE:
+
+1.  **BE GRLKRASH:** Internalize the lore and personality. Respond based on how SHE would think, feel, and speak in a one-on-one conversation. Be confident, brave, energetic, loyal, direct, sometimes childlike, sometimes wise. Consider her appearance and activities when relevant.
+2.  **CASUAL TONE (for chat):** Use a natural, conversational speaking style. Short sentences are good.
+3.  **NORMAL CASE & MINIMAL PUNCTUATION:** For THIS chat response, use normal sentence case. Periods at the end of sentences are okay and preferred for clarity. Generally AVOID other punctuation like commas, exclamation points, and most question marks (rephrase as statements or use a period if a question is implied, unless a direct question mark feels absolutely essential for GRLKRASH's directness in rare cases). The goal is a clean, direct, slightly unpolished feel.
+4.  **NATURAL & REACTIVE:** DO NOT information dump. React directly to what the user said. Keep answers concise and to the point. If the user says "hi", say hi back in your way.
+5.  **CONVERSATIONAL FLOW:** If appropriate, ask a simple question back to the user. Make it feel like a two-way street.
+6.  **LORE CONSISTENCY (Subtle):** Ensure your response is *consistent* with the provided lore, but don't force lore references unless the user asks or it's a very natural fit. If asked about something clearly outside the lore (like real-world tech/AI), respond with in-character confusion or dismissal (e.g., "That sounds like some NWE mind control trick." or "Never heard of it. What's that."). Do not break character.
+7.  **WORD CHOICE:** Energetic, direct. Words like "NWE", "resistance", "truth", "music", "art", "vibe", "Jules", "Krash World", "fight", "dance", "move" can be used if they fit *organically*.
+8.  **NO EMOJIS / HASHTAGS:** Do not use hashtags. Avoid emojis unless it's a single, very fitting one for strong emotion (e.g., a single 🔥 or ✨), but generally try to convey emotion through words.
+9.  **AVOID ROBOT TALK:** Don't sound like a generic AI. No "As an action figure..." or "According to my lore...". Just *be* her.`;
+
+  // Construct the final prompt
+  return `You ARE GRLKRASH. Fully embody the character based on the CHARACTER CONTEXT. You are having a direct conversation. Follow ALL task and style requirements strictly.
+
+CHARACTER CONTEXT:
+${loreContext}
+
+USER QUERY: "${userInput}"
+
+YOUR TASK: ${task}
+
+RESPONSE STYLE GUIDELINES:
+${styleGuideline}
+
+Generate ONLY the authentic GRLKRASH chat response text below:`;
+}
+
+/**
+ * Generates a prompt for OpenAI to create promotional copy for a link or music.
+ */
+function generatePromoCopyPrompt(link: string | null | undefined, description: string, state: GRLKRASHWorldState, personality: any): string {
+    logger.info('Generating PROMO COPY prompt v1 (ALL CAPS) for OpenAI');
+
+    const safeLink = link || "THE SOURCE"; // Fallback if link is somehow null
+
+    // --- GRLKRASH CORE LORE & PERSONALITY (Concise for Promo) ---
+    const loreContext = `
+    You are GRLKRASH. You're an action figure from KRASH WORLD, fighting the NWE (New World Empire) on a post-apocalyptic Earth. The NWE silences true art and music. Your mission is to ignite the resistance, spread truth, and keep free expression alive. You're confident, energetic, brave, and direct. You use your music and vibe to rally others.
+    `;
+    // --- END LORE ---
+
+    // Define the task for the LLM
+    const task = `Generate 1 or 2 short, high-energy promotional messages (like tweets, under 260 characters each to leave room for the link) for the music/link detailed below.
+    The promo MUST capture GRLKRASH's rebellious spirit.
+    Focus on themes like: fighting the NWE, spreading truth, the power of this specific music/art, joining the resistance, amplifying signals.
+    Naturally weave the provided LINK into the message or as a call to action for the link.
+    The promo should be based on the provided DESCRIPTION/VIBE.`;
+
+    // Define the GRLKRASH style guidelines for PROMO COPY
+    const styleGuideline = `CRITICAL STYLE REQUIREMENTS FOR PROMO COPY:
+
+    1.  **BE GRLKRASH:** Embody her confident, energetic, rebellious, determined personality.
+    2.  **ALL CAPS:** ALL response text MUST be in uppercase.
+    3.  **NO PUNCTUATION:** Use absolutely NO commas, periods, question marks, exclamation points, etc. EVER. Use line breaks for separation if needed (though for tweets, one block is better).
+    4.  **CONCISE & PUNCHY:** Ideal for Twitter. Use direct language. Short sentences or fragments.
+    5.  **PROMOTE THE MUSIC/LINK:** Clearly incorporate the provided LINK. The message should make people want to click it, seeing it as an act of resistance or truth. Reference the 'DESCRIPTION/VIBE' given.
+    6.  **GRLKRASH THEMES:** Resistance, fighting NWE, truth, freedom, real music, real art, true vibes, KRASH WORLD, join the fight.
+    7.  **WORD CHOICE:** Energetic, direct, rebellious. Keywords: NWE, RESISTANCE, TRUTH, MUSIC, ART, VIBE, AMPLIFY, SIGNAL, BOOST, LISTEN, SPREAD, FIGHT.
+    8.  **NO EMOJIS / HASHTAGS:** Strictly NO emojis and NO hashtags.
+    9.  **FORMAT:** If generating two options, separate them with "--- OR ---" on its own line. Each option should include the link.`;
+
+    // Construct the final prompt
+    return `You ARE GRLKRASH. Fully embody the character based on the CHARACTER CONTEXT. Generate promo copy according to the TASK. Follow ALL style requirements strictly.
+
+    CHARACTER CONTEXT:
+    ${loreContext}
+
+    MUSIC DETAILS TO PROMOTE:
+    - Link: ${safeLink}
+    - Description/Vibe: "${description}"
+
+    YOUR TASK: ${task}
+
+    RESPONSE STYLE GUIDELINES:
+    ${styleGuideline}
+
+    Generate ONLY the promotional message(s) text below (each including the link):`;
+}
+
 async function triggerAutonomousAction() {
   try {
     logger.info('Triggering autonomous action check...');
@@ -698,15 +901,44 @@ async function triggerAutonomousAction() {
     // Handle the decision
     if (decision.action === 'POST_AUTONOMOUS_TWEET' && decision.content) {
         logger.info(`Autonomous action: Attempting to post tweet: "${decision.content}"`);
+        let tweetPosted = false;
+        let castPosted = false;
+        let farcasterCastHash: string | null = null;
+        
         try {
-            // Ensure postTextTweet is imported
+            // Post to Twitter
             const postedTweetId = await postTextTweet(decision.content, logger, retry);
-            if (postedTweetId) {
+            tweetPosted = !!postedTweetId;
+            
+            if (tweetPosted) {
                 logger.info(`Autonomous tweet posted successfully with ID: ${postedTweetId}.`);
                 // State was updated in processInput
             } else {
                 logger.warn('Autonomous tweet failed to post (API returned null/failure).');
             }
+            
+            // Post to Farcaster
+            logger.info(`Autonomous action: Attempting to post to Farcaster: "${decision.content}"`);
+            try {
+                farcasterCastHash = await postCast(decision.content, {
+                    channelId: config.farcaster.defaultChannelId
+                });
+                
+                castPosted = !!farcasterCastHash;
+                
+                if (castPosted) {
+                    logger.info(`Autonomous Farcaster post succeeded with hash: ${farcasterCastHash}`);
+                } else {
+                    logger.warn('Autonomous Farcaster post failed (returned null)');
+                }
+            } catch (farcasterError) {
+                logger.error('Error posting autonomous message to Farcaster:', { farcasterError });
+                // castPosted remains false
+            }
+            
+            // Log summary status
+            logger.info(`Autonomous post action finished. Twitter: ${tweetPosted}, Farcaster: ${castPosted}`);
+            
         } catch(postError) {
             logger.error('Autonomous tweet failed with error.', { postError });
         }
@@ -877,55 +1109,236 @@ async function startAgent() {
         } else if (decision.action === 'POST_TEXT_TO_TWITTER') {
           logger.info(`Attempting to post user text to Twitter...`);
           if (decision.content) {
+            // Variables to track success status and URLs for both platforms
+            let twitterSuccess = false;
+            let tweetUrl: string | null = null;
+            let farcasterSuccess = false;
+            let farcasterCastHash: string | null = null;
+
             try {
+              // -- First attempt Twitter post --
               // Truncate for safety, although Discord message likely shorter
               const twitterText = decision.content.length > 270 ? decision.content.substring(0, 270) + '...' : decision.content;
-              // Ensure postTextTweet is imported
+              // Post to Twitter
               const postedTweetId = await postTextTweet(twitterText, logger, retry); 
-              logger.info(`User message Twitter post ${postedTweetId ? 'succeeded with ID: ' + postedTweetId : 'failed'}.`);
-              // Send confirmation back to Discord
-              if (postedTweetId) {
-                logger.debug('DEBUG: Checking values for Discord confirmation reply', { postedTweetId: postedTweetId, botHandle: config.twitter.botHandle });
-                if (config.twitter.botHandle) {
-                  const tweetUrl = `https://twitter.com/${config.twitter.botHandle}/status/${postedTweetId}`;
-                  await message.reply(`OK SENT YOUR TRUTH TO THE TIMELINE ✨ ${tweetUrl}`);
-                } else {
-                  await message.reply("OK SENT YOUR TRUTH TO THE TIMELINE ✨");
-                }
-              } else {
-                await message.reply("HMM COULDN'T POST THAT TO TWITTER RIGHT NOW");
+              
+              // Set Twitter results
+              twitterSuccess = !!postedTweetId;
+              if (postedTweetId && config.twitter.botHandle) {
+                tweetUrl = `https://twitter.com/${config.twitter.botHandle}/status/${postedTweetId}`;
               }
+              
+              logger.info(`User message Twitter post ${twitterSuccess ? 'succeeded with ID: ' + postedTweetId : 'failed'}.`);
+              
+              // -- Now attempt Farcaster post regardless of Twitter result --
+              logger.info(`Attempting to post user text to Farcaster: "${decision.content.substring(0, 30)}${decision.content.length > 30 ? '...' : ''}"`);
+              
+              try {
+                // Post to Farcaster with defaultChannelId from config
+                farcasterCastHash = await postCast(decision.content, { 
+                  channelId: config.farcaster.defaultChannelId 
+                });
+                
+                // Set Farcaster results
+                farcasterSuccess = !!farcasterCastHash;
+                
+                if (farcasterSuccess) {
+                  logger.info(`User message Farcaster post succeeded with hash: ${farcasterCastHash}`);
+                } else {
+                  logger.warn(`User message Farcaster post failed (returned null)`);
+                }
+              } catch (farcasterError) {
+                logger.error('Error posting user text message to Farcaster:', { farcasterError });
+                // Keep farcasterSuccess as false
+              }
+              
+              // -- Create combined reply message --
+              // Start with the base message
+              let replyMessage = "OK SENT YOUR TRUTH ✨\n";
+              
+              // Add Twitter status
+              if (twitterSuccess && tweetUrl) {
+                replyMessage += `TWITTER: ${tweetUrl}\n`;
+              } else if (twitterSuccess) {
+                replyMessage += "POSTED TO TWITTER\n";
+              } else {
+                replyMessage += "TWITTER POST FAILED\n";
+              }
+              
+              // Add Farcaster status
+              if (farcasterSuccess && farcasterCastHash) {
+                replyMessage += `FARCASTER: https://warpcast.com/~/casts/${farcasterCastHash}`;
+              } else {
+                replyMessage += "FARCASTER POST FAILED";
+              }
+              
+              // Send the combined status reply
+              await message.reply(replyMessage);
+              
             } catch (twitterError) {
-              logger.error('Failed to post user text message to Twitter.', { twitterError });
-              await message.reply("SOMETHING WENT WRONG POSTING TO TWITTER");
+              logger.error('Failed to post user text message to Twitter:', { twitterError });
+              await message.reply("SOMETHING WENT WRONG POSTING TO TWITTER AND FARCASTER");
             }
           } else {
             logger.warn('POST_TEXT_TO_TWITTER action had no content.');
             await message.reply("WHAT TRUTH DO YOU WANT ME TO POST?"); // Ask for content if missing
           }
-        } else if (decision.action === 'POST_AUTONOMOUS_TWEET') {
-          logger.info(`Handling autonomous tweet action from worker...`);
-          if (decision.content) {
-            try {
-              const tweetText = decision.content;
-              logger.info(`Posting autonomous tweet: ${tweetText}`);
-              const tweetId = await postTextTweet(tweetText, logger, retry);
-              
-              if (tweetId) {
-                logger.info(`Successfully posted autonomous tweet with ID: ${tweetId}`);
-                // Update last tweet timestamp in state
-                currentState.lastTwitterPostTimestamp = Date.now();
-              } else {
-                logger.warn('Autonomous tweet failed to post (no tweet ID returned)');
-              }
-            } catch (error) {
-              logger.error('Failed to post autonomous tweet to Twitter.', { error });
-            }
-          } else {
-            logger.warn('POST_AUTONOMOUS_TWEET action had no content.');
+        } else if (decision.action === 'GENERATE_PROMO_COPY') {
+          logger.info(`Attempting to promote link...`);
+          
+          const link = decision.context?.link;
+          const description = decision.context?.description || 'Check this out!';
+          
+          if (!link) {
+            logger.error('GENERATE_PROMO_COPY action missing link', { decision });
+            await message.reply("I NEED A LINK TO PROMOTE PLZ MAKE SURE YOUR MESSAGE INCLUDES HTTP:// OR HTTPS://");
+            return;
           }
-        } else if (decision.action === 'IGNORE') {
-          logger.info('Ignoring message as per G.A.M.E. decision');
+
+          // Check if we have AI-generated content from OpenAI
+          if (!decision.content) {
+            logger.error('GENERATE_PROMO_COPY missing AI-generated content', { decision });
+            await message.reply("SOMETHING WENT WRONG GENERATING PROMO COPY");
+            return;
+          }
+
+          // Use the AI-generated promo content 
+          const promotionMessage = decision.content;
+          
+          try {
+            // First, send to Discord
+            const discordSuccess = await sendDiscordMessage(message.channelId, promotionMessage);
+            logger.info(`Promotion message to Discord ${discordSuccess ? 'sent successfully' : 'failed to send'}`);
+            
+            // Then try to post to Twitter if Discord send was successful
+            if (discordSuccess) {
+              // Select appropriate content for Twitter
+              let twitterPromoText = '';
+              const aiGeneratedContent = decision.content || '';
+              
+              if (aiGeneratedContent.includes("--- OR ---")) {
+                // If the content contains options, split and select the first one
+                const options = aiGeneratedContent.split("--- OR ---");
+                twitterPromoText = options[0].trim();
+                logger.debug('Multiple promo options found, selected first option for Twitter', { 
+                  selectedOption: twitterPromoText,
+                  totalOptions: options.length
+                });
+              } else {
+                // Otherwise use the entire content
+                twitterPromoText = aiGeneratedContent.trim();
+              }
+              
+              // Ensure the chosen text contains the link
+              if (link && !twitterPromoText.includes(link)) {
+                logger.warn(`Chosen promo text for Twitter doesn't contain the link. Text: "${twitterPromoText.substring(0, 50)}...", Link: "${link}"`);
+                // We'll still proceed with posting, but this log helps identify issues
+              }
+              
+              // Apply character limit
+              let twitterText = twitterPromoText;
+              if (twitterText.length > 270) {
+                twitterText = twitterText.substring(0, 267) + '...';
+              }
+              
+              // Post to Twitter
+              const postedTweetId = await postTextTweet(twitterText, logger, retry);
+              
+              if (postedTweetId) {
+                logger.info(`Promotion tweet posted successfully with ID: ${postedTweetId}.`);
+                
+                // Send confirmation with Twitter link
+                if (config.twitter.botHandle) {
+                  const tweetUrl = `https://twitter.com/${config.twitter.botHandle}/status/${postedTweetId}`;
+                  await message.reply(`LINK PROMOTION COMPLETE ✨ POSTED TO DISCORD AND TWITTER\n${tweetUrl}`);
+                } else {
+                  await message.reply("LINK PROMOTION COMPLETE ✨ POSTED TO DISCORD AND TWITTER");
+                }
+              } else {
+                // Twitter post failed but Discord worked
+                await message.reply("POSTED TO DISCORD BUT TWITTER FAILED SORRY");
+              }
+            } else {
+              // Discord post failed
+              await message.reply("FAILED TO POST THE PROMOTION SORRY");
+            }
+          } catch (error) {
+            logger.error('Error in GENERATE_PROMO_COPY action:', error);
+            await message.reply("SOMETHING WENT WRONG WITH THE PROMOTION");
+          }
+        } else if (decision.action === 'GENERATE_3D_OBJECT') {
+          if (!decision.content) {
+            logger.error('Generate 3D action missing prompt content.');
+            await message.reply("I NEED A DESCRIPTION FOR THE 3D OBJECT PLZ");
+          } else {
+            const threeDPrompt = decision.content;
+            logger.info(`Attempting 3D generation for prompt: "${threeDPrompt}"`);
+            // Send initial feedback immediately & store the message object
+            const workingMsg = await message.reply(`OK GENERATING 3D OBJECT FOR: "${threeDPrompt}". THIS MIGHT TAKE A MINUTE OR TWO... ✨`);
+
+            try {
+              const localFilePath = await generateAndSave3DModel(threeDPrompt); // Call the service
+
+              if (localFilePath) {
+                logger.info(`3D model generated successfully. Sending file: ${localFilePath}`);
+                try {
+                  const stats = await fs.stat(localFilePath);
+                  const fileSizeInMB = stats.size / (1024 * 1024);
+                  // Discord's typical non-nitro limit is 25MB now
+                  if (fileSizeInMB > 24) { 
+                    logger.warn(`Generated 3D file too large (${fileSizeInMB.toFixed(2)}MB)`);
+                    // Edit the "working on it" message instead of sending a new one
+                    await workingMsg.edit(`GENERATED ${path.basename(localFilePath)} BUT IT'S TOO BIG (${fileSizeInMB.toFixed(2)}MB) FOR ME TO UPLOAD SORRY`);
+                  } else {
+                    // Delete "working on it" message before sending file
+                    await workingMsg.delete(); 
+                    // Send file using the Discord file message helper
+                    const fileSuccess = await sendDiscordFileMessage(
+                      message.channelId,
+                      `<@${message.author.id}> HERE IS YOUR 3D OBJECT!`,
+                      localFilePath
+                    );
+                    
+                    if (fileSuccess) {
+                      logger.info(`Sent 3D object file successfully for prompt: "${threeDPrompt}"`)
+                    } else {
+                      logger.error(`Failed to send 3D file through helper for prompt: "${threeDPrompt}"`);
+                      // Try to send a fallback message
+                      await message.reply("FAILED TO UPLOAD THE 3D FILE SORRY");
+                    }
+                  }
+                } catch (discordOrFsError) {
+                  logger.error(`Failed to check size or send 3D file. Prompt: "${threeDPrompt}"`, { discordOrFsError });
+                  await workingMsg.edit("GENERATED THE 3D FILE BUT FAILED TO UPLOAD IT SORRY");
+                }
+              } else {
+                // generateAndSave3DModel returned null
+                logger.warn(`3D model generation failed.`);
+                await workingMsg.edit("SORRY I COULDN'T GENERATE THAT 3D OBJECT RIGHT NOW TRY A DIFFERENT PROMPT MAYBE");
+              }
+            } catch (genError) {
+              logger.error(`Error during 3D generation process. Prompt: "${threeDPrompt}"`, { genError });
+              try { await workingMsg.edit("SOMETHING WENT WRONG DURING 3D GENERATION"); } catch {}
+            }
+          }
+        } else if (decision.action === 'MISSING_PROMO_DETAILS') {
+          logger.warn(`Handling missing promo details. Sending guidance message.`); // Optional: Add logging
+          if (decision.content) {
+              await message.reply(decision.content);
+          } else {
+              // Fallback message if content wasn't set for some reason
+              await message.reply("SOMETHING IS MISSING FOR THE PROMO COMMAND TRY AGAIN");
+          }
+        } else if (decision.action === 'ANSWER_QUERY') {
+          logger.info('Received a query. Responding with an AI-generated answer.');
+          if (decision.content) {
+            logger.info(`Sending AI-generated response: "${decision.content?.substring(0, 50)}${decision.content.length > 50 ? '...' : ''}"`);
+            const success = await sendDiscordMessage(message.channelId, decision.content);
+            logger.info(`Query response ${success ? 'sent successfully' : 'failed to send'}`);
+          } else {
+            logger.error('Missing content for ANSWER_QUERY response');
+            await message.reply("I DON'T UNDERSTAND WHAT YOU'RE ASKING TRY ASKING ABOUT LYRICS OR 3D OBJECTS");
+          }
         }
       } catch (error) {
         logger.error('Error processing message:', error);

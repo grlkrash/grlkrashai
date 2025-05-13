@@ -170,4 +170,47 @@ export async function sendDiscordImageMessage(channelId: string, content: string
         logger.error('Error sending Discord image message', { channelId, imageKey, imagePath, message: error?.message, code: error?.code, stack: error?.stack });
         return false;
     }
+}
+
+/**
+ * Sends a file with optional text to a Discord channel
+ * @param channelId The ID of the channel to send the message to
+ * @param content The text content to send with the file
+ * @param filePath The full path to the file to send
+ * @returns Promise resolving to a boolean indicating success/failure
+ */
+export async function sendDiscordFileMessage(channelId: string, content: string, filePath: string): Promise<boolean> {
+    try {
+        if (!client) {
+            logger.error('Discord client not initialized');
+            return false;
+        }
+        
+        const channel = await client.channels.fetch(channelId);
+        if (!channel) {
+            logger.error(`Channel ${channelId} not found`);
+            return false;
+        }
+        
+        if (!('send' in channel)) {
+            logger.error(`Channel ${channelId} is not a text-based channel`);
+            return false;
+        }
+        
+        logger.info('Attempting to attach file from path:', filePath);
+        
+        const messageOptions: MessageCreateOptions = {
+            content,
+            files: [{
+                attachment: filePath,
+                name: path.basename(filePath)
+            }]
+        };
+        
+        await (channel as TextChannel).send(messageOptions);
+        return true;
+    } catch (error: any) {
+        logger.error('Error sending Discord file message', { channelId, filePath, message: error?.message, code: error?.code, stack: error?.stack });
+        return false;
+    }
 } 

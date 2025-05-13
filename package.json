@@ -20,9 +20,11 @@
   "description": "",
   "dependencies": {
     "@fal-ai/client": "^1.4.0",
+    "@farcaster/hub-nodejs": "^0.13.5",
     "@ledgerhq/hw-app-eth": "^6.44.0",
     "@ledgerhq/hw-transport": "^6.28.3",
     "@ledgerhq/hw-transport-node-hid": "^6.28.3",
+    "@noble/ed25519": "^2.2.3",
     "@virtuals-protocol/game": "^0.1.11",
     "aws-sdk": "^2.1550.0",
     "chalk": "^4.1.2",
