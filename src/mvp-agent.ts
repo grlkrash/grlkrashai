@@ -14,7 +14,10 @@ import {
   sendDiscordFileMessage
 } from './services/discord/discordService.js'
 import { postImageTweet, postTextTweet } from './services/twitter/mvpTwitterService.js'
-import { postCast } from './services/farcaster/neynarService.js'
+import { 
+  postCast,
+  fetchNewMentions 
+} from './services/farcaster/neynarService.js'
 import { Client, Events, Message, User as DiscordUser } from 'discord.js'
 import { generateTextResponse } from './services/openai/openaiClient.js'
 import { URLSearchParams } from 'url'
@@ -53,6 +56,9 @@ let currentState: GRLKRASHWorldState = { ...initialWorldState }
 
 // Interval for autonomous actions
 let autonomousActionInterval: NodeJS.Timeout | null = null;
+// Interval for checking Farcaster mentions
+let farcasterMentionCheckInterval: NodeJS.Timeout | null = null;
+const FARCASTER_MENTION_CHECK_INTERVAL_MS = 1 * 30 * 1000; // Check every 30 seconds (adjust as needed)
 
 // Define input type for processInput
 interface ProcessInputArgs {
@@ -63,6 +69,7 @@ interface ProcessInputArgs {
     timestamp: string
     messageId: string
     channelId?: string // Add channelId as optional for backward compatibility
+    replyToHashFarcaster?: string // Add optional property for Farcaster reply hash
   }
 }
 
@@ -171,7 +178,24 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
         logger.info(`Received generated autonomous content (${generatedContent.length} chars)`);
         logger.debug('Generated content:', generatedContent);
         
-        decision.content = generatedContent;
+        // Remove emojis from generated content
+        const emojiRegex = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{2B50}\u{1F004}\u{1F0CF}\u{1F170}-\u{1F171}\u{1F17E}-\u{1F17F}\u{1F18E}\u{1F191}-\u{1F19A}\u{1F201}-\u{1F202}\u{1F21A}\u{1F22F}\u{1F232}-\u{1F23A}\u{1F250}-\u{1F251}\u{200D}\u{FE0F}]/gu;
+        const contentWithoutEmojis = generatedContent.replace(emojiRegex, '').trim();
+        logger.debug('Content after emoji stripping:', contentWithoutEmojis);
+        
+        // Remove leading/trailing quotes from content
+        logger.debug('Before quote stripping:', contentWithoutEmojis);
+        let finalAutonomousContent = contentWithoutEmojis;
+        if (finalAutonomousContent.startsWith('"') && finalAutonomousContent.endsWith('"')) {
+          finalAutonomousContent = finalAutonomousContent.substring(1, finalAutonomousContent.length - 1);
+        }
+        else if (finalAutonomousContent.startsWith("'") && finalAutonomousContent.endsWith("'")) {
+          finalAutonomousContent = finalAutonomousContent.substring(1, finalAutonomousContent.length - 1);
+        }
+        finalAutonomousContent = finalAutonomousContent.trim();
+        logger.debug('After quote stripping:', finalAutonomousContent);
+        
+        decision.content = finalAutonomousContent;
         
         // Update state with action type and timestamp
         currentState.lastAutonomousActionType = decision.action;
@@ -189,130 +213,221 @@ worker.processInput = async (input: ProcessInputArgs): Promise<ProcessDecision> 
     currentState.agentStatus = 'IDLE'
     
     return decision
-  }
-  
+  } else if (type === 'farcaster_mention') {
+    logger.info(`Processing farcaster_mention from ${input.context.user.username}: "${input.content.substring(0, 50)}${input.content.length > 50 ? '...' : ''}"`)
+    
+    // Extract originalCastHash and content
+    const originalCastHash = input.context.messageId
+    const farcasterContent = input.content
+    
+    // Clean farcaster content (remove @grlkrashai mention if it's at the beginning)
+    let cleanedFarcasterContent = farcasterContent
+    cleanedFarcasterContent = cleanedFarcasterContent.replace(/^@grlkrashai\s+/i, '')
+    
+    // Update world state
+    currentState.lastMentionReceived = {
+      userId: input.context.user.id,
+      userName: input.context.user.username,
+      messageId: originalCastHash,
+      text: cleanedFarcasterContent,
+      timestamp: Date.now(),
+      keywordsFound: extractKeywords(cleanedFarcasterContent)
+    }
+    currentState.agentStatus = 'PROCESSING'
+    currentState.lastActionTimestamp = Date.now()
+    currentState.currentTime = new Date()
+    
+    // Make decision based on content analysis
+    logger.info(`Making decision based on keywords: ${currentState.lastMentionReceived.keywordsFound.join(', ') || 'none found'}`)
+    const decisionFromMakeDecision = await makeDecision(cleanedFarcasterContent, currentState, currentPersonality, input)
+    logger.info(`Decision made for farcaster_mention: ${decisionFromMakeDecision.action}`)
+    
+    // Initialize prompt variables
+    let prompt = ''
+    let temperature = 0.7
+    let requiresOpenAI = false
+    
+    // Based on decision.action, prepare for OpenAI if needed
+    if (decisionFromMakeDecision.action === 'ANSWER_QUERY') {
+      prompt = generateChatResponsePrompt(cleanedFarcasterContent, currentState, currentPersonality)
+      temperature = 0.85
+      requiresOpenAI = true
+    }
+    // Add other action types here as needed
+    
+    // Call OpenAI if required
+    if (requiresOpenAI && prompt) {
+      try {
+        const generatedContent = await generateTextResponse(prompt, temperature)
+        logger.info(`Received generated content for ${decisionFromMakeDecision.action} (${generatedContent.length} chars)`)
+        logger.debug(`Generated content:`, generatedContent)
+        
+        // Add quote stripping logic for Farcaster mentions
+        logger.debug(`Before quote stripping: "${generatedContent}"`)
+        let finalContent = generatedContent.trim()
+        if (finalContent.startsWith('"') && finalContent.endsWith('"')) {
+          finalContent = finalContent.substring(1, finalContent.length - 1)
+        }
+        else if (finalContent.startsWith("'") && finalContent.endsWith("'")) {
+          finalContent = finalContent.substring(1, finalContent.length - 1)
+        }
+        finalContent = finalContent.trim()
+        logger.debug(`After quote stripping: "${finalContent}"`)
+        
+        decisionFromMakeDecision.content = finalContent
+      } catch (error) {
+        logger.error(`Failed to generate content for ${decisionFromMakeDecision.action}:`, error)
+        decisionFromMakeDecision.content = undefined
+      }
+    } else if (requiresOpenAI && !prompt) {
+      logger.error(`OpenAI call needed but prompt generation failed for action: ${decisionFromMakeDecision.action}`)
+      decisionFromMakeDecision.content = undefined
+    }
+    
+    // Prepare final decision
+    const finalDecision: ProcessDecision = { ...decisionFromMakeDecision }
+    
+    // For actions that require a Farcaster reply, add the reply hash to context
+    if (finalDecision.action === 'ANSWER_QUERY') {
+      finalDecision.context = { 
+        ...finalDecision.context, 
+        replyToHashFarcaster: originalCastHash 
+      }
+    }
+    
+    // Reset agent status to IDLE after processing
+    currentState.agentStatus = 'IDLE'
+    
+    return finalDecision
+  } 
   // For Discord mentions, continue with normal processing
-  const { user: discordUser, timestamp, messageId } = context
+  else if (type === 'discord_mention') {
+    const { user: discordUser, timestamp, messageId } = context
   
-  // 2. Update world state
-  const previousState = { ...currentState }
-  currentState.lastMentionReceived = {
-    userId: discordUser.id,
-    userName: discordUser.username,
-    messageId, // Use messageId directly as field name has been updated
-    text: content,
-    timestamp: Date.now(),
-    keywordsFound: extractKeywords(content)
-  }
-  currentState.agentStatus = 'PROCESSING'
-  currentState.lastActionTimestamp = Date.now()
-  currentState.currentTime = new Date()
-  
-  logger.debug('Updated currentState with new message data:', {
-    userId: discordUser.id,
-    userName: discordUser.username,
-    messageId,
-    keywordsFound: currentState.lastMentionReceived.keywordsFound,
-    agentStatus: currentState.agentStatus
-  })
-  
-  // 4. Make decision based on content analysis
-  logger.info(`Making decision based on keywords: ${currentState.lastMentionReceived.keywordsFound.join(', ') || 'none found'}`)
-  const decision = await makeDecision(content || '', currentState, currentPersonality, input)
-  logger.info(`Decision made: ${decision.action}`)
-  
-  // Handle state update specific to autonomous post decision - MOVED HERE right after decision is made
-  if (decision.action.startsWith('POST_AUTONOMOUS_')) {
-    currentState.lastTwitterPostTimestamp = Date.now()
-    currentState.lastAutonomousActionType = decision.action // Store the action type
-    logger.debug('Updated lastTwitterPostTimestamp and lastAutonomousActionType in state.')
-  }
-  
-  // 5. If generating content, prepare prompt and call OpenAI
-  let prompt = '';
-  let temperature = 0.7; // Default temperature
-  let currentTopic = content || ''; // Use input content as default topic
-  let requiresOpenAI = false; // Flag to track if OpenAI is needed
-
-  if (decision.action === 'GENERATE_LYRICS') {
-    prompt = generateLyricsPrompt(currentTopic, currentState, currentPersonality);
-    temperature = 0.6;
-    logger.info('Calling OpenAI to generate initial lyrics');
-    requiresOpenAI = true;
-  } else if (decision.action === 'GENERATE_MORE_LYRICS') {
-    // Extract topic and previous verse from decision context/content
-    currentTopic = decision.content || currentState.lastLyricRequest?.topic || 'the struggle'; // Get topic
-    const prevVerse = decision.context?.previousVerse || '';
-    if (!prevVerse) logger.warn("Generating 'more' lyrics but no previous verse found in decision context");
-    prompt = generateMoreLyricsPrompt(currentTopic, prevVerse, currentState, currentPersonality); // Note parameter order
-    temperature = 0.65; // Slightly higher temperature for continuation creativity
-    logger.info('Calling OpenAI to generate MORE lyrics');
-    requiresOpenAI = true;
-  } else if (decision.action === 'POST_AUTONOMOUS_TWEET') {
-    prompt = generateAutonomousTweetPrompt(currentState, currentPersonality);
-    temperature = 0.9; // INCREASED temperature for more varied autonomous thoughts
-    logger.info('Calling OpenAI to generate autonomous thought');
-    requiresOpenAI = true;
-  } else if (decision.action === 'POST_TEXT') {
-    // Handle POST_TEXT if still needed
-    prompt = generatePrompt(currentTopic, currentState, currentPersonality);
-    logger.info('Calling OpenAI to generate response text');
-    requiresOpenAI = true;
-  } else if (decision.action === 'GENERATE_PROMO_COPY') {
-    // Extract link and description from decision context
-    const link = decision.context?.link;
-    const description = decision.context?.description || 'Check this out!';
-    prompt = generatePromoCopyPrompt(link, description, currentState, currentPersonality);
-    temperature = 0.8; // Slightly higher temperature for creative promo copy
-    logger.info('Calling OpenAI to generate promotional copy');
-    requiresOpenAI = true;
-  } else if (decision.action === 'ANSWER_QUERY') {
-    // Handle ANSWER_QUERY - use the lore-based chat response prompt
-    prompt = generateChatResponsePrompt(currentTopic, currentState, currentPersonality);
-    temperature = 0.75; // Balanced temperature for in-character responses
-    logger.info('Calling OpenAI to generate lore-based chat response');
-    requiresOpenAI = true;
-  }
-  // ... Any other actions needing OpenAI would go here ...
-
-  // Only call OpenAI if required and a valid prompt was generated
-  if (requiresOpenAI) {
-    if (prompt) {
-      const generatedContent = await generateTextResponse(prompt, temperature);
-      const logMsg = decision.action.replace(/_/g, ' ').toLowerCase(); // Generate log message from action name
-      logger.info(`Received generated ${logMsg} (${generatedContent.length} chars)`);
-      logger.debug(`Generated ${logMsg}:`, generatedContent);
-      decision.content = generatedContent; // Assign generated content back
-    } else {
-      logger.error('OpenAI call needed but prompt generation failed for action:', decision.action);
-      decision.content = undefined; // Ensure content is undefined
+    // 2. Update world state
+    const previousState = { ...currentState }
+    currentState.lastMentionReceived = {
+      userId: discordUser.id,
+      userName: discordUser.username,
+      messageId, // Use messageId directly as field name has been updated
+      text: content,
+      timestamp: Date.now(),
+      keywordsFound: extractKeywords(content)
     }
-  }
-  
-  // Update last lyric request context if lyrics were generated
-  if ((decision.action === 'GENERATE_LYRICS' || decision.action === 'GENERATE_MORE_LYRICS') && decision.content) {
-    // Ensure context exists and has user/channelId
-    const userId = input.context.user?.id;
-    const channelId = input.context.channelId;
-    if (userId && channelId) {
-      currentState.lastLyricRequest = {
-        userId: userId,
-        channelId: channelId,
-        topic: currentTopic, // Use the topic determined above
-        lastVerse: decision.content, // Store the NEWLY generated verse
-        timestamp: Date.now()
-      };
-      logger.debug('Updated lastLyricRequest state.');
-    } else {
-      logger.warn('Could not update lastLyricRequest state: missing userId or channelId in input context.');
+    currentState.agentStatus = 'PROCESSING'
+    currentState.lastActionTimestamp = Date.now()
+    currentState.currentTime = new Date()
+    
+    logger.debug('Updated currentState with new message data:', {
+      userId: discordUser.id,
+      userName: discordUser.username,
+      messageId,
+      keywordsFound: currentState.lastMentionReceived.keywordsFound,
+      agentStatus: currentState.agentStatus
+    })
+    
+    // 4. Make decision based on content analysis
+    logger.info(`Making decision based on keywords: ${currentState.lastMentionReceived.keywordsFound.join(', ') || 'none found'}`)
+    const decision = await makeDecision(content || '', currentState, currentPersonality, input)
+    logger.info(`Decision made: ${decision.action}`)
+    
+    // Handle state update specific to autonomous post decision - MOVED HERE right after decision is made
+    if (decision.action.startsWith('POST_AUTONOMOUS_')) {
+      currentState.lastTwitterPostTimestamp = Date.now()
+      currentState.lastAutonomousActionType = decision.action // Store the action type
+      logger.debug('Updated lastTwitterPostTimestamp and lastAutonomousActionType in state.')
     }
+    
+    // 5. If generating content, prepare prompt and call OpenAI
+    let prompt = '';
+    let temperature = 0.7; // Default temperature
+    let currentTopic = content || ''; // Use input content as default topic
+    let requiresOpenAI = false; // Flag to track if OpenAI is needed
+
+    if (decision.action === 'GENERATE_LYRICS') {
+      prompt = generateLyricsPrompt(currentTopic, currentState, currentPersonality);
+      temperature = 0.6;
+      logger.info('Calling OpenAI to generate initial lyrics');
+      requiresOpenAI = true;
+    } else if (decision.action === 'GENERATE_MORE_LYRICS') {
+      // Extract topic and previous verse from decision context/content
+      currentTopic = decision.content || currentState.lastLyricRequest?.topic || 'the struggle'; // Get topic
+      const prevVerse = decision.context?.previousVerse || '';
+      if (!prevVerse) logger.warn("Generating 'more' lyrics but no previous verse found in decision context");
+      prompt = generateMoreLyricsPrompt(currentTopic, prevVerse, currentState, currentPersonality); // Note parameter order
+      temperature = 0.65; // Slightly higher temperature for continuation creativity
+      logger.info('Calling OpenAI to generate MORE lyrics');
+      requiresOpenAI = true;
+    } else if (decision.action === 'POST_AUTONOMOUS_TWEET') {
+      prompt = generateAutonomousTweetPrompt(currentState, currentPersonality);
+      temperature = 0.9; // INCREASED temperature for more varied autonomous thoughts
+      logger.info('Calling OpenAI to generate autonomous thought');
+      requiresOpenAI = true;
+    } else if (decision.action === 'POST_TEXT') {
+      // Handle POST_TEXT if still needed
+      prompt = generatePrompt(currentTopic, currentState, currentPersonality);
+      logger.info('Calling OpenAI to generate response text');
+      requiresOpenAI = true;
+    } else if (decision.action === 'GENERATE_PROMO_COPY') {
+      // Extract link and description from decision context
+      const link = decision.context?.link;
+      const description = decision.context?.description || 'Check this out!';
+      prompt = generatePromoCopyPrompt(link, description, currentState, currentPersonality);
+      temperature = 0.8; // Slightly higher temperature for creative promo copy
+      logger.info('Calling OpenAI to generate promotional copy');
+      requiresOpenAI = true;
+    } else if (decision.action === 'ANSWER_QUERY') {
+      // Handle ANSWER_QUERY - use the lore-based chat response prompt
+      prompt = generateChatResponsePrompt(currentTopic, currentState, currentPersonality);
+      temperature = 0.75; // Balanced temperature for in-character responses
+      logger.info('Calling OpenAI to generate lore-based chat response');
+      requiresOpenAI = true;
+    }
+    // ... Any other actions needing OpenAI would go here ...
+
+    // Only call OpenAI if required and a valid prompt was generated
+    if (requiresOpenAI) {
+      if (prompt) {
+        const generatedContent = await generateTextResponse(prompt, temperature);
+        const logMsg = decision.action.replace(/_/g, ' ').toLowerCase(); // Generate log message from action name
+        logger.info(`Received generated ${logMsg} (${generatedContent.length} chars)`);
+        logger.debug(`Generated ${logMsg}:`, generatedContent);
+        decision.content = generatedContent; // Assign generated content back
+      } else {
+        logger.error('OpenAI call needed but prompt generation failed for action:', decision.action);
+        decision.content = undefined; // Ensure content is undefined
+      }
+    }
+    
+    // Update last lyric request context if lyrics were generated
+    if ((decision.action === 'GENERATE_LYRICS' || decision.action === 'GENERATE_MORE_LYRICS') && decision.content) {
+      // Ensure context exists and has user/channelId
+      const userId = input.context.user?.id;
+      const channelId = input.context.channelId;
+      if (userId && channelId) {
+        currentState.lastLyricRequest = {
+          userId: userId,
+          channelId: channelId,
+          topic: currentTopic, // Use the topic determined above
+          lastVerse: decision.content, // Store the NEWLY generated verse
+          timestamp: Date.now()
+        };
+        logger.debug('Updated lastLyricRequest state.');
+      } else {
+        logger.warn('Could not update lastLyricRequest state: missing userId or channelId in input context.');
+      }
+    }
+    
+    // Reset agent status to IDLE after processing
+    currentState.agentStatus = 'IDLE'
+    
+    // 6. Return final decision
+    return decision
   }
-  
-  // Reset agent status to IDLE after processing
-  currentState.agentStatus = 'IDLE'
-  
-  // 6. Return final decision
-  return decision
+  else {
+    logger.warn(`Unknown input type: ${type}`);
+    return { action: 'IGNORE' };
+  }
 }
 
 // Helper function to extract keywords from content
@@ -565,7 +680,21 @@ async function makeDecision(
             content: contentToUse 
         };
     }
-  } else {
+  } 
+  else if (input.type === 'farcaster_mention') {
+    logger.debug(`makeDecision: Processing Farcaster mention: "${inputContent}"`);
+    
+    // Extract keywords from inputContent
+    const keywordsFound = extractKeywords(inputContent);
+    
+    // For now, treat all Farcaster mentions that reach here as queries
+    // inputContent is already cleaned by worker.processInput
+    return { 
+        action: 'ANSWER_QUERY', 
+        content: inputContent 
+    };
+  }
+  else {
     logger.warn(`Unknown input type received in makeDecision: ${input.type}`);
     return { action: 'IGNORE' };
   }
@@ -964,6 +1093,7 @@ SPEECH STYLE FOR CHAT: For conversational chat like this, use a more natural, di
   const task = `You ARE GRLKRASH. Embody the character described in the lore. Read the user's query below and respond NATURALLY and CONVERSATIONALLY as GRLKRASH would.
 Your underlying knowledge comes from the lore, but DO NOT just recite facts from it. Focus on reacting authentically TO THE USER'S SPECIFIC MESSAGE from GRLKRASH's perspective.
 If it feels natural, you can ask a short, relevant question back to the user to keep the conversation flowing.
+When directly asked about specific GRLKRASH lore elements (like 'Krash World', 'NWE', 'Jules', your origin, or your mission), provide a slightly more detailed and engaging explanation, drawing from specific elements of your CHARACTER CONTEXT. Aim for a detailed paragraph of 3-5 sentences if the topic allows, without just listing facts.
 Example user query: "Hey what's up"
 Good GRLKRASH response: "Just gearing up to fight the NWE. Whats good with you." or "Not much. Just tryna keep the vibe alive. You know how it is."
 Bad GRLKRASH response (info dump): "HEY I AM GRLKRASH I AM FROM KRASH WORLD AND I FIGHT THE NWE WITH MY FRIEND JULES"`;
@@ -993,6 +1123,10 @@ YOUR TASK: ${task}
 
 RESPONSE STYLE GUIDELINES:
 ${styleGuideline}
+
+User Query Example: what is krash world?
+Good GRLKRASH Response Example (incorporating more detail):
+"Krash World... man, that's the source. Imagine a place bursting with pure sound, where every color screams and the art just hits different, straight from the soul. It's where I was before Jules' vibe sparked me here on this Earth. Now, bringing that Krash World energy is how we fight the NWE's static and keep the realness alive. It's more than a place, it's the frequency we gotta tune into."
 
 Generate ONLY the authentic GRLKRASH chat response text below:`;
 }
@@ -1133,6 +1267,106 @@ async function triggerAutonomousAction() {
     }
   } catch (error) {
     logger.error('Error in autonomous action:', error);
+  }
+}
+
+/**
+ * Check for new Farcaster mentions to GRLKRASH and process them
+ */
+async function checkFarcasterMentions() {
+  try {
+    logger.info('Checking for new Farcaster mentions...');
+    
+    // Get FID and cursor from config and state
+    const grlkrashFid = config.farcaster.grlkrashFid;
+    const cursor = currentState.lastFarcasterNotificationCursor || undefined;
+    
+    // Check if FID is available
+    if (!grlkrashFid || grlkrashFid === 0) {
+      logger.error('Cannot check Farcaster mentions: grlkrashFid not set in config');
+      return;
+    }
+    
+    // Fetch new mentions from Neynar API
+    const { mentions, nextCursor } = await fetchNewMentions(grlkrashFid, cursor);
+    
+    if (mentions.length > 0) {
+      logger.info(`Found ${mentions.length} new Farcaster mentions to process`);
+      
+      // Process each mention (assumed to be in chronological order)
+      for (const mention of mentions) {
+        // Check if this mention has already been processed
+        if (currentState.processedFarcasterMentionHashes.includes(mention.hash)) {
+          logger.info(`[Farcaster Mention Skip] Already processed: ${mention.hash.substring(0,10)}...`);
+          continue;
+        }
+        
+        logger.info(`Processing Farcaster mention from @${mention.authorUsername} (FID: ${mention.authorFid}): "${mention.text.substring(0, 50)}${mention.text.length > 50 ? '...' : ''}"`);
+        
+        // Clean mention text (potentially remove @GRLKRASH if needed)
+        let mentionText = mention.text;
+        
+        // Create properly structured inputArgs object
+        const inputArgs: ProcessInputArgs = {
+          type: 'farcaster_mention',
+          content: mentionText,
+          context: {
+            user: {
+              id: mention.authorFid.toString(),
+              username: mention.authorUsername,
+            },
+            timestamp: new Date(mention.timestamp * 1000).toISOString(),
+            messageId: mention.hash,
+            channelId: 'farcaster',
+            replyToHashFarcaster: mention.hash // Store the original hash for replying
+          }
+        };
+        
+        // Process the mention through the worker
+        const decision = await worker.processInput(inputArgs);
+        logger.info(`Decision for Farcaster mention: ${decision.action}`);
+        
+        // Handle the decision - specifically for replying to Farcaster mentions
+        if (decision.action === 'ANSWER_QUERY' && decision.content && decision.context?.replyToHashFarcaster) {
+          logger.info(`Replying to Farcaster mention with hash ${decision.context.replyToHashFarcaster}`);
+          
+          try {
+            // Post the reply to Farcaster
+            const replyHash = await postCast(decision.content, {
+              replyToHash: decision.context.replyToHashFarcaster,
+              replyToFid: mention.authorFid
+            });
+            
+            if (replyHash) {
+              logger.info(`Successfully replied to Farcaster mention with cast hash: ${replyHash}`);
+            } else {
+              logger.warn('Failed to reply to Farcaster mention (returned null)');
+            }
+          } catch (replyError) {
+            logger.error('Error replying to Farcaster mention:', { replyError });
+          }
+        } else {
+          logger.info(`Not replying to Farcaster mention (action: ${decision.action})`);
+        }
+        
+        // Add this mention hash to the processed list
+        currentState.processedFarcasterMentionHashes.push(mention.hash);
+        
+        // Prune the processed mentions list if it grows too large
+        if (currentState.processedFarcasterMentionHashes.length > 100) {
+          currentState.processedFarcasterMentionHashes = currentState.processedFarcasterMentionHashes.slice(-100);
+        }
+      }
+    } else {
+      logger.info('No new Farcaster mentions found');
+    }
+    
+    // Update the cursor in the state for next check
+    currentState.lastFarcasterNotificationCursor = nextCursor;
+    logger.info(`Updated Farcaster notification cursor to: ${nextCursor || 'null'}`);
+    
+  } catch (error) {
+    logger.error('Error checking Farcaster mentions:', error);
   }
 }
 
@@ -1539,6 +1773,13 @@ async function startAgent() {
     autonomousActionInterval = setInterval(triggerAutonomousAction, AUTONOMOUS_CHECK_INTERVAL_MS);
     // --- End Autonomous Action Loop ---
 
+    // --- Start Farcaster Mention Check Loop ---
+    logger.info(`Starting Farcaster mention check every ${FARCASTER_MENTION_CHECK_INTERVAL_MS / 1000 / 60} minutes.`);
+    if (farcasterMentionCheckInterval) clearInterval(farcasterMentionCheckInterval); // Clear previous if any
+    checkFarcasterMentions(); // Run once on start
+    farcasterMentionCheckInterval = setInterval(checkFarcasterMentions, FARCASTER_MENTION_CHECK_INTERVAL_MS);
+    // --- End Farcaster Mention Check Loop ---
+
   } catch (error) {
     logger.error('Failed to start agent:', error);
     process.exit(1);
@@ -1551,6 +1792,10 @@ process.on('SIGINT', async () => {
   if (autonomousActionInterval) {
     clearInterval(autonomousActionInterval);
     logger.info('Stopped autonomous action interval.');
+  }
+  if (farcasterMentionCheckInterval) {
+    clearInterval(farcasterMentionCheckInterval);
+    logger.info('Stopped Farcaster mention check interval.');
   }
   await shutdownDiscordClient();
   process.exit(0);

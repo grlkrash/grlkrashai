@@ -18,6 +18,8 @@ export interface GRLKRASHWorldState {
   lastActionTimestamp?: number
   lastTwitterPostTimestamp?: number
   lastAutonomousActionType?: string | null
+  lastFarcasterNotificationCursor?: string | null
+  processedFarcasterMentionHashes: string[]
   currentTime: Date
 }
 
@@ -28,5 +30,7 @@ export const initialWorldState: GRLKRASHWorldState = {
   lastLyricRequest: undefined,
   lastActionTimestamp: undefined,
   lastTwitterPostTimestamp: undefined,
-  lastAutonomousActionType: null
+  lastAutonomousActionType: null,
+  lastFarcasterNotificationCursor: null,
+  processedFarcasterMentionHashes: []
 } 
